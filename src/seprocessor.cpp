@@ -15,7 +15,8 @@
 SingleEndProcessor::SingleEndProcessor(Options* opt){
     mOptions = opt;
     mPackInMemLimit = packInMemLimit(mOptions->thread);
-    mPackSize = packSize(mOptions->thread);
+    // See PairEndProcessor: keep the split output layout unchanged.
+    mPackSize = mOptions->split.enabled ? PACK_SIZE : packSize(mOptions->thread);
     mReaderFinished = false;
     mFinishedThreads = 0;
     mFilter = new Filter(opt);
@@ -349,6 +350,7 @@ void SingleEndProcessor::readerTask()
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
+            pack->firstRead = readNum;
             mInputLists[mPackReadCounter % mOptions->thread]->produce(pack);
             mPackReadCounter++;
             mBackpressureCV.notify_all();
@@ -375,6 +377,7 @@ void SingleEndProcessor::readerTask()
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
+            pack->firstRead = readNum;
             mInputLists[mPackReadCounter % mOptions->thread]->produce(pack);
             mPackReadCounter++;
             mBackpressureCV.notify_all();

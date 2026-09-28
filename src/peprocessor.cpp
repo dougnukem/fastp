@@ -16,7 +16,9 @@
 PairEndProcessor::PairEndProcessor(Options* opt){
     mOptions = opt;
     mPackInMemLimit = packInMemLimit(mOptions->thread);
-    mPackSize = packSize(mOptions->thread);
+    // Split output assigns each worker's packs to its own files, so keep the
+    // original pack size there to keep the split layout unchanged.
+    mPackSize = mOptions->split.enabled ? PACK_SIZE : packSize(mOptions->thread);
     mLeftReaderFinished = false;
     mRightReaderFinished = false;
     mFinishedThreads = 0;
@@ -383,6 +385,10 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
     int readPassed = 0;
     int mergedCount = 0;
     for(int p=0;p<leftPack->count && p<rightPack->count;p++){
+        // Insert-size stats sample exactly the reads thread 0 received when packs
+        // were always PACK_SIZE reads dealt round-robin, independent of the pack
+        // size in use, so the report doesn't change with packSize().
+        bool isizeSample = ((leftPack->firstRead + p) / PACK_SIZE) % mOptions->thread == 0;
         Read* or1 = leftPack->data[p];
         Read* or2 = rightPack->data[p];
 
@@ -437,7 +443,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
         // Cache overlap result: compute once, reuse for adapter trimming, correction, isize, and merge
         OverlapResult ov = {};
         bool ovComputed = false;
-        if(r1 != NULL && r2!=NULL && (mOptions->adapter.enabled || mOptions->correction.enabled || config->getThreadId() == 0 || mOptions->merge.enabled)){
+        if(r1 != NULL && r2!=NULL && (mOptions->adapter.enabled || mOptions->correction.enabled || isizeSample || mOptions->merge.enabled)){
             ov = OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0);
             ovComputed = true;
         }
@@ -447,8 +453,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
             OverlapResult ovForAdapter = mOptions->adapter.allowGapOverlapTrimming
                 ? OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0, true)
                 : ov;
-            // we only use thread 0 to evaluate ISIZE
-            if(config->getThreadId() == 0) {
+            if(isizeSample) {
                 statInsertSize(r1, r2, ov, frontTrimmed1, frontTrimmed2);
                 isizeEvaluated = true;
             }
@@ -496,7 +501,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
             }
         }
 
-        if(config->getThreadId() == 0 && !isizeEvaluated && r1 != NULL && r2!=NULL) {
+        if(isizeSample && !isizeEvaluated && r1 != NULL && r2!=NULL) {
             if(!ovComputed) {
                 ov = OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0);
                 ovComputed = true;
@@ -768,6 +773,7 @@ void PairEndProcessor::readerTask(bool isLeft)
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
+            pack->firstRead = readNum;
 
             if(isLeft) {
                 mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(pack);
@@ -805,6 +811,7 @@ void PairEndProcessor::readerTask(bool isLeft)
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
+            pack->firstRead = readNum;
             
             if(isLeft) {
                 mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(pack);
@@ -916,6 +923,7 @@ void PairEndProcessor::interleavedReaderTask()
             packRight->data = dataRight;
             packLeft->count = count;
             packRight->count = count;
+            packLeft->firstRead = packRight->firstRead = readNum;
 
             mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(packLeft);
             mLeftPackReadCounter++;
@@ -948,6 +956,7 @@ void PairEndProcessor::interleavedReaderTask()
             packRight->data = dataRight;
             packLeft->count = count;
             packRight->count = count;
+            packLeft->firstRead = packRight->firstRead = readNum;
 
             mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(packLeft);
             mLeftPackReadCounter++;
