@@ -33,6 +33,10 @@ SingleEndProcessor::SingleEndProcessor(Options* opt){
     mPackProcessedCounter = 0;
 
     mReadPool = new ReadPool(mOptions);
+
+    mRing = new PackRing((size_t)mPackInMemLimit * 2 + mOptions->thread);
+    mNextClaim = 0;
+    mStaticSchedule = mOptions->split.enabled;
 }
 
 SingleEndProcessor::~SingleEndProcessor() {
@@ -45,7 +49,7 @@ SingleEndProcessor::~SingleEndProcessor() {
         delete mReadPool;
         mReadPool = NULL;
     }
-    delete[] mInputLists;
+    delete mRing;
 }
 
 void SingleEndProcessor::initOutput() {
@@ -80,13 +84,9 @@ bool SingleEndProcessor::process(){
     if(!mOptions->split.enabled)
         initOutput();
 
-    mInputLists = new SingleProducerSingleConsumerList<ReadPack*>*[mOptions->thread];
-
     ThreadConfig** configs = new ThreadConfig*[mOptions->thread];
     for(int t=0; t<mOptions->thread; t++){
-        mInputLists[t] = new SingleProducerSingleConsumerList<ReadPack*>();
         configs[t] = new ThreadConfig(mOptions, t, false);
-        configs[t]->setInputList(mInputLists[t]);
         initConfig(configs[t]);
     }
 
@@ -202,6 +202,7 @@ bool SingleEndProcessor::processSingleEnd(ReadPack* pack, ThreadConfig* config){
     string outstr, failedOut;
     outstr.reserve(pack->count * 320);
     int tid = config->getThreadId();
+    size_t seq = pack->seq;
 
     int readPassed = 0;
     for(int p=0;p<pack->count;p++){
@@ -305,10 +306,10 @@ bool SingleEndProcessor::processSingleEnd(ReadPack* pack, ThreadConfig* config){
     }
 
     if(mLeftWriter) {
-        mLeftWriter->input(tid, new string(std::move(outstr)));
+        mLeftWriter->input(tid, seq, new string(std::move(outstr)));
     }
     if(mFailedWriter) {
-        mFailedWriter->input(tid, new string(std::move(failedOut)));
+        mFailedWriter->input(tid, seq, new string(std::move(failedOut)));
     }
 
     if(mOptions->split.byFileLines)
@@ -351,7 +352,8 @@ void SingleEndProcessor::readerTask()
             pack->data = data;
             pack->count = count;
             pack->firstRead = readNum;
-            mInputLists[mPackReadCounter % mOptions->thread]->produce(pack);
+            pack->seq = mPackReadCounter;
+            mRing->publish(pack->seq, pack);
             mPackReadCounter++;
             mBackpressureCV.notify_all();
             data = NULL;
@@ -378,7 +380,8 @@ void SingleEndProcessor::readerTask()
             pack->data = data;
             pack->count = count;
             pack->firstRead = readNum;
-            mInputLists[mPackReadCounter % mOptions->thread]->produce(pack);
+            pack->seq = mPackReadCounter;
+            mRing->publish(pack->seq, pack);
             mPackReadCounter++;
             mBackpressureCV.notify_all();
             //re-initialize data for next pack
@@ -421,8 +424,7 @@ void SingleEndProcessor::readerTask()
         }
     }
 
-    for(int t=0; t<mOptions->thread; t++)
-        mInputLists[t]->setProducerFinished();
+    mRing->finish();
 
     //std::unique_lock<std::mutex> lock(mRepo.readCounterMtx);
     mReaderFinished.store(true, std::memory_order_release);
@@ -438,29 +440,23 @@ void SingleEndProcessor::readerTask()
 
 void SingleEndProcessor::processorTask(ThreadConfig* config)
 {
-    SingleProducerSingleConsumerList<ReadPack*>* input = config->getLeftInput();
+    // Deliberately no canBeStopped() check: under the static schedule, a
+    // worker that stopped claiming would drop every pack still assigned to it.
+    // Previously such workers kept draining their queue and wrote the overflow
+    // into their last split file; keep that behavior.
+    size_t staticSeq = config->getThreadId();
     while(true) {
-        if(config->canBeStopped()){
+        size_t seq = mStaticSchedule ? staticSeq : mNextClaim.fetch_add(1, std::memory_order_relaxed);
+        staticSeq += mOptions->thread;
+        ReadPack* data = mRing->take(seq);
+        if(!data)
             break;
-        }
-        while(input->canBeConsumed()) {
-            ReadPack* data = input->consume();
-            processSingleEnd(data, config);
-        }
-        if(input->isProducerFinished()) {
-            if(!input->canBeConsumed()) {
-                if(mOptions->verbose) {
-                    string msg = "thread " + to_string(config->getThreadId() + 1) + " data processing completed";
-                    loginfo(msg);
-                }
-                break;
-            }
-        } else {
-            std::unique_lock<std::mutex> lk(mBackpressureMtx);
-            mBackpressureCV.wait_for(lk, std::chrono::milliseconds(1));
-        }
+        processSingleEnd(data, config);
     }
-    input->setConsumerFinished();
+    if(mOptions->verbose) {
+        string msg = "thread " + to_string(config->getThreadId() + 1) + " data processing completed";
+        loginfo(msg);
+    }
 
     if(mFinishedThreads.fetch_add(1, std::memory_order_release) + 1 == mOptions->thread) {
         if(mLeftWriter)
