@@ -46,6 +46,16 @@ PairEndProcessor::PairEndProcessor(Options* opt){
 
     mLeftReadPool = new ReadPool(mOptions);
     mRightReadPool = new ReadPool(mOptions);
+
+    // Reader backpressure keeps at most ~mPackInMemLimit packs ahead of
+    // processing, so this is rarely full; publish() blocks if it ever is.
+    size_t ringSize = (size_t)mPackInMemLimit * 2 + mOptions->thread;
+    mLeftRing = new PackRing(ringSize);
+    mRightRing = new PackRing(ringSize);
+    mNextClaim = 0;
+    // Split output writes each worker's reads to that worker's own files, so
+    // keep the fixed round-robin pack-to-worker mapping there.
+    mStaticSchedule = mOptions->split.enabled;
 }
 
 PairEndProcessor::~PairEndProcessor() {
@@ -62,8 +72,8 @@ PairEndProcessor::~PairEndProcessor() {
         delete mRightReadPool;
         mRightReadPool = NULL;
     }
-    delete[] mLeftInputLists;
-    delete[] mRightInputLists;
+    delete mLeftRing;
+    delete mRightRing;
 }
 
 void PairEndProcessor::initOutput() {
@@ -140,15 +150,9 @@ bool PairEndProcessor::process(){
     std::thread* readerRight = NULL;
     std::thread* readerInterveleaved = NULL;
 
-    mLeftInputLists = new SingleProducerSingleConsumerList<ReadPack*>*[mOptions->thread];
-    mRightInputLists = new SingleProducerSingleConsumerList<ReadPack*>*[mOptions->thread];
-
     ThreadConfig** configs = new ThreadConfig*[mOptions->thread];
     for(int t=0; t<mOptions->thread; t++){
-        mLeftInputLists[t] = new SingleProducerSingleConsumerList<ReadPack*>();
-        mRightInputLists[t] = new SingleProducerSingleConsumerList<ReadPack*>();
         configs[t] = new ThreadConfig(mOptions, t, true);
-        configs[t]->setInputListPair(mLeftInputLists[t], mRightInputLists[t]);
         initConfig(configs[t]);
     }
 
@@ -371,6 +375,12 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
         shouldStopReading = true;
     }
     int tid = config->getThreadId();
+    // Writers reassemble output by this global pack number, so any worker can
+    // process any pack.
+    size_t seq = leftPack->seq;
+    // Insert-size stats sample the same packs thread 0 always got under the
+    // old round-robin schedule, so reports stay deterministic.
+    bool isizeSample = seq % mOptions->thread == 0;
 
     // build output on stack strings, move to heap only when handing off to writers
     string outstr1, outstr2, unpairedOut1, unpairedOut2;
@@ -437,7 +447,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
         // Cache overlap result: compute once, reuse for adapter trimming, correction, isize, and merge
         OverlapResult ov = {};
         bool ovComputed = false;
-        if(r1 != NULL && r2!=NULL && (mOptions->adapter.enabled || mOptions->correction.enabled || config->getThreadId() == 0 || mOptions->merge.enabled)){
+        if(r1 != NULL && r2!=NULL && (mOptions->adapter.enabled || mOptions->correction.enabled || isizeSample || mOptions->merge.enabled)){
             ov = OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0);
             ovComputed = true;
         }
@@ -447,8 +457,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
             OverlapResult ovForAdapter = mOptions->adapter.allowGapOverlapTrimming
                 ? OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0, true)
                 : ov;
-            // we only use thread 0 to evaluate ISIZE
-            if(config->getThreadId() == 0) {
+            if(isizeSample) {
                 statInsertSize(r1, r2, ov, frontTrimmed1, frontTrimmed2);
                 isizeEvaluated = true;
             }
@@ -496,7 +505,7 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
             }
         }
 
-        if(config->getThreadId() == 0 && !isizeEvaluated && r1 != NULL && r2!=NULL) {
+        if(isizeSample && !isizeEvaluated && r1 != NULL && r2!=NULL) {
             if(!ovComputed) {
                 ov = OverlapAnalysis::analyze(r1, r2, mOptions->overlapDiffLimit, mOptions->overlapRequire, mOptions->overlapDiffPercentLimit/100.0);
                 ovComputed = true;
@@ -654,37 +663,37 @@ bool PairEndProcessor::processPairEnd(ReadPack* leftPack, ReadPack* rightPack, T
 
     if(mMergedWriter) {
         // move to heap for writer thread ownership
-        mMergedWriter->input(tid, new string(std::move(mergedOutput)));
+        mMergedWriter->input(tid, seq, new string(std::move(mergedOutput)));
     }
 
     if(mFailedWriter) {
-        mFailedWriter->input(tid, new string(std::move(failedOut)));
+        mFailedWriter->input(tid, seq, new string(std::move(failedOut)));
     }
 
     if(mOverlappedWriter) {
-        mOverlappedWriter->input(tid, new string(std::move(overlappedOut)));
+        mOverlappedWriter->input(tid, seq, new string(std::move(overlappedOut)));
     }
 
     // normal output by left/right writer thread
     if(mRightWriter && mLeftWriter) {
         // write PE - move to heap for writer thread ownership
-        mLeftWriter->input(tid, new string(std::move(outstr1)));
-        mRightWriter->input(tid, new string(std::move(outstr2)));
+        mLeftWriter->input(tid, seq, new string(std::move(outstr1)));
+        mRightWriter->input(tid, seq, new string(std::move(outstr2)));
     } else if(mLeftWriter) {
         if(mOptions->merge.enabled && mOptions->outputToSTDOUT) {
             // in merge+stdout mode, merged reads are buffered in mergedOutput
-            mLeftWriter->input(tid, new string(std::move(mergedOutput)));
+            mLeftWriter->input(tid, seq, new string(std::move(mergedOutput)));
         } else {
             // write singleOutput
-            mLeftWriter->input(tid, new string(std::move(singleOutput)));
+            mLeftWriter->input(tid, seq, new string(std::move(singleOutput)));
         }
     }
     // output unpaired reads
     if(mUnpairedLeftWriter && mUnpairedRightWriter) {
-        mUnpairedLeftWriter->input(tid, new string(std::move(unpairedOut1)));
-        mUnpairedRightWriter->input(tid, new string(std::move(unpairedOut2)));
+        mUnpairedLeftWriter->input(tid, seq, new string(std::move(unpairedOut1)));
+        mUnpairedRightWriter->input(tid, seq, new string(std::move(unpairedOut2)));
     } else if(mUnpairedLeftWriter) {
-        mUnpairedLeftWriter->input(tid, new string(std::move(unpairedOut1)));
+        mUnpairedLeftWriter->input(tid, seq, new string(std::move(unpairedOut1)));
     }
 
     if(mOptions->split.byFileLines)
@@ -770,10 +779,12 @@ void PairEndProcessor::readerTask(bool isLeft)
             pack->count = count;
 
             if(isLeft) {
-                mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(pack);
+                pack->seq = mLeftPackReadCounter;
+                mLeftRing->publish(pack->seq, pack);
                 mLeftPackReadCounter++;
             } else {
-                mRightInputLists[mRightPackReadCounter % mOptions->thread]->produce(pack);
+                pack->seq = mRightPackReadCounter;
+                mRightRing->publish(pack->seq, pack);
                 mRightPackReadCounter++;
             }
             mBackpressureCV.notify_all();
@@ -807,10 +818,12 @@ void PairEndProcessor::readerTask(bool isLeft)
             pack->count = count;
             
             if(isLeft) {
-                mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(pack);
+                pack->seq = mLeftPackReadCounter;
+                mLeftRing->publish(pack->seq, pack);
                 mLeftPackReadCounter++;
             } else {
-                mRightInputLists[mRightPackReadCounter % mOptions->thread]->produce(pack);
+                pack->seq = mRightPackReadCounter;
+                mRightRing->publish(pack->seq, pack);
                 mRightPackReadCounter++;
             }
             mBackpressureCV.notify_all();
@@ -862,12 +875,10 @@ void PairEndProcessor::readerTask(bool isLeft)
         }
     }
 
-    for(int t=0; t<mOptions->thread; t++) {
-        if(isLeft)
-            mLeftInputLists[t]->setProducerFinished();
-        else
-            mRightInputLists[t]->setProducerFinished();
-    }
+    if(isLeft)
+        mLeftRing->finish();
+    else
+        mRightRing->finish();
     mBackpressureCV.notify_all();
 
     if(mOptions->verbose) {
@@ -917,10 +928,12 @@ void PairEndProcessor::interleavedReaderTask()
             packLeft->count = count;
             packRight->count = count;
 
-            mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(packLeft);
+            packLeft->seq = mLeftPackReadCounter;
+            mLeftRing->publish(packLeft->seq, packLeft);
             mLeftPackReadCounter++;
 
-            mRightInputLists[mRightPackReadCounter % mOptions->thread]->produce(packRight);
+            packRight->seq = mRightPackReadCounter;
+            mRightRing->publish(packRight->seq, packRight);
             mRightPackReadCounter++;
 
             mBackpressureCV.notify_all();
@@ -949,10 +962,12 @@ void PairEndProcessor::interleavedReaderTask()
             packLeft->count = count;
             packRight->count = count;
 
-            mLeftInputLists[mLeftPackReadCounter % mOptions->thread]->produce(packLeft);
+            packLeft->seq = mLeftPackReadCounter;
+            mLeftRing->publish(packLeft->seq, packLeft);
             mLeftPackReadCounter++;
 
-            mRightInputLists[mRightPackReadCounter % mOptions->thread]->produce(packRight);
+            packRight->seq = mRightPackReadCounter;
+            mRightRing->publish(packRight->seq, packRight);
             mRightPackReadCounter++;
             mBackpressureCV.notify_all();
 
@@ -1000,10 +1015,8 @@ void PairEndProcessor::interleavedReaderTask()
 
     delete pair;
 
-    for(int t=0; t<mOptions->thread; t++) {
-        mLeftInputLists[t]->setProducerFinished();
-        mRightInputLists[t]->setProducerFinished();
-    }
+    mLeftRing->finish();
+    mRightRing->finish();
     mBackpressureCV.notify_all();
 
     if(mOptions->verbose) {
@@ -1022,28 +1035,30 @@ void PairEndProcessor::interleavedReaderTask()
 
 void PairEndProcessor::processorTask(ThreadConfig* config)
 {
-    SingleProducerSingleConsumerList<ReadPack*>* inputLeft = config->getLeftInput();
-    SingleProducerSingleConsumerList<ReadPack*>* inputRight = config->getRightInput();
+    // Deliberately no canBeStopped() check: under the static schedule, a
+    // worker that stopped claiming would drop every pack still assigned to it.
+    // Previously such workers kept draining their queue and wrote the overflow
+    // into their last split file; keep that behavior.
+    size_t staticSeq = config->getThreadId();
     while(true) {
-        if(config->canBeStopped()){
+        size_t seq = mStaticSchedule ? staticSeq : mNextClaim.fetch_add(1, std::memory_order_relaxed);
+        staticSeq += mOptions->thread;
+        ReadPack* dataLeft = mLeftRing->take(seq);
+        ReadPack* dataRight = mRightRing->take(seq);
+        if(!dataLeft || !dataRight) {
+            // End of input (or R1/R2 have different pack counts): drop any
+            // unmatched pack rather than leak it.
+            ReadPack* orphan = dataLeft ? dataLeft : dataRight;
+            if(orphan) {
+                for(int i=0; i<orphan->count; i++)
+                    delete orphan->data[i];
+                delete[] orphan->data;
+                delete orphan;
+            }
             break;
         }
-        while(inputLeft->canBeConsumed() && inputRight->canBeConsumed()) {
-            ReadPack* dataLeft = inputLeft->consume();
-            ReadPack* dataRight = inputRight->consume();
-            processPairEnd(dataLeft, dataRight, config);
-        }
-        if(inputLeft->isProducerFinished() && !inputLeft->canBeConsumed()) {
-            break;
-        } else if(inputRight->isProducerFinished() && !inputRight->canBeConsumed()) {
-            break;
-        } else {
-            std::unique_lock<std::mutex> lk(mBackpressureMtx);
-            mBackpressureCV.wait_for(lk, std::chrono::milliseconds(1));
-        }
+        processPairEnd(dataLeft, dataRight, config);
     }
-    inputLeft->setConsumerFinished();
-    inputRight->setConsumerFinished();
 
     int finishedCount = mFinishedThreads.fetch_add(1, std::memory_order_release) + 1;
     if(mOptions->verbose) {

@@ -17,6 +17,7 @@
 #include "writerthread.h"
 #include "duplicate.h"
 #include "readpool.h"
+#include "packring.h"
 
 
 using namespace std;
@@ -59,8 +60,13 @@ private:
     WriterThread* mFailedWriter;
     WriterThread* mOverlappedWriter;
     Duplicate* mDuplicate;
-    SingleProducerSingleConsumerList<ReadPack*>** mLeftInputLists;
-    SingleProducerSingleConsumerList<ReadPack*>** mRightInputLists;
+    // Readers publish packs by sequence number; workers claim sequence numbers
+    // (dynamically via mNextClaim, or statically t, t+W, ... when split output
+    // needs a fixed pack-to-worker mapping) and take them from these rings.
+    PackRing* mLeftRing;
+    PackRing* mRightRing;
+    alignas(128) std::atomic<size_t> mNextClaim;
+    bool mStaticSchedule;
     size_t mLeftPackReadCounter;
     size_t mRightPackReadCounter;
     alignas(128) atomic_long mPackProcessedCounter;
