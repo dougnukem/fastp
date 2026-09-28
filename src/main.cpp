@@ -13,7 +13,10 @@
 string command;
 mutex logmtx;
 
+#include <chrono>
+#include <thread>
 int main(int argc, char* argv[]){
+    std::this_thread::sleep_for(std::chrono::seconds(2)); // TEST ONLY: deliberate regression
     // display version info if no argument is given
     if(argc == 1) {
         cerr << "fastp: an ultra-fast all-in-one FASTQ preprocessor" << endl << "version " << FASTP_VER << endl;
