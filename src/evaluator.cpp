@@ -1,6 +1,8 @@
 #include "evaluator.h"
 #include "fastqreader.h"
 #include <map>
+#include <algorithm>
+#include <vector>
 #include <memory.h>
 #include "nucleotidetree.h"
 #include "knownadapters.h"
@@ -217,10 +219,20 @@ void Evaluator::evaluateReadNum(long& readNum) {
     }
 }
 
+// Only exact uppercase ACGT: the verification below compares raw characters,
+// so anything else (N, lowercase) can never be part of an exact k-mer match.
+static inline int exactBaseCode(char c) {
+    switch(c) {
+        case 'A': return 0;
+        case 'C': return 1;
+        case 'G': return 2;
+        case 'T': return 3;
+        default: return -1;
+    }
+}
+
 string Evaluator::checkKnownAdapters(Read** reads, long num) {
     map<string, string> knownAdapters = getKnownAdapter();
-    map<string, int> possibleCounts;
-    map<string, int> mismatches;
 
     // for performance, up to 100k reads and 100M bases
     const int MAX_CHECK_READS = 100000;
@@ -231,14 +243,36 @@ string Evaluator::checkKnownAdapters(Read** reads, long num) {
     const int matchReq = 8;
     const int allowOneMismatchForEach = 16;
 
-    map<string, string>::iterator iter;
+    // Adapters in map order: they must be visited in the same order as a full
+    // scan, since curMaxCount (and so the skip rule below) can change mid-read.
+    vector<string> adapters;
+    for(map<string, string>::iterator iter = knownAdapters.begin(); iter != knownAdapters.end(); iter++)
+        adapters.push_back(iter->first);
+    const int adapterNum = adapters.size();
+    vector<int> possibleCounts(adapterNum, 0);
+    vector<int> mismatches(adapterNum, 0);
 
-    for(iter = knownAdapters.begin(); iter!= knownAdapters.end(); iter++) {
-        string adapter = iter->first;
-        possibleCounts[adapter] = 0;
-        mismatches[adapter] = 0;
+    // A window is accepted with at most cmplen/16 mismatches and cmplen > matchReq,
+    // so by pigeonhole it always contains an exact matchReq-base block of the
+    // adapter. Index every adapter matchReq-mer, and only verify the positions an
+    // exact read hit implies; any other position cannot pass the check below.
+    const int K = matchReq;
+    const unsigned int kmerMask = (1u << (2*K)) - 1;
+    vector<vector<pair<int, int> > > kmerIndex(1 << (2*K));
+    for(int a=0; a<adapterNum; a++) {
+        const string& ad = adapters[a];
+        unsigned int code = 0;
+        int valid = 0;
+        for(int i=0; i<(int)ad.length(); i++) {
+            int v = exactBaseCode(ad[i]);
+            if(v < 0) { valid = 0; continue; }
+            code = ((code << 2) | v) & kmerMask;
+            if(++valid >= K)
+                kmerIndex[code].push_back(make_pair(a, i - K + 1));
+        }
     }
 
+    vector<pair<int, int> > candidates;
     long checkedReads = 0;
     long checkedBases = 0;
     int curMaxCount = 0;
@@ -253,17 +287,41 @@ string Evaluator::checkKnownAdapters(Read** reads, long num) {
             break;
         if(curMaxCount > MAX_HIT)
             break;
-        for(iter = knownAdapters.begin(); iter!= knownAdapters.end(); iter++) {
-            string adapter = iter->first;
-            const char* adata = adapter.c_str();
-            int alen = adapter.length();
-            if(alen >= rlen)
+
+        candidates.clear();
+        unsigned int code = 0;
+        int valid = 0;
+        for(int q=0; q<rlen; q++) {
+            int v = exactBaseCode(rdata[q]);
+            if(v < 0) { valid = 0; continue; }
+            code = ((code << 2) | v) & kmerMask;
+            if(++valid < K)
                 continue;
-            // this one is not the candidate, skip it for speedup
-            if(curMaxCount > 20 && possibleCounts[adapter] <curMaxCount/10) {
-                continue; 
+            int kmerStart = q - K + 1;
+            const vector<pair<int, int> >& hits = kmerIndex[code];
+            for(size_t h=0; h<hits.size(); h++) {
+                int pos = kmerStart - hits[h].second;
+                if(pos >= 0 && pos < rlen-matchReq)
+                    candidates.push_back(make_pair(hits[h].first, pos));
             }
-            for(int pos = 0; pos<rlen-matchReq; pos++) {
+        }
+        sort(candidates.begin(), candidates.end());
+        candidates.erase(unique(candidates.begin(), candidates.end()), candidates.end());
+
+        for(size_t c=0; c<candidates.size(); ) {
+            int a = candidates[c].first;
+            size_t groupEnd = c;
+            while(groupEnd < candidates.size() && candidates[groupEnd].first == a)
+                groupEnd++;
+            const char* adata = adapters[a].c_str();
+            int alen = adapters[a].length();
+            // same per-adapter checks as the full scan, applied in the same order
+            if(alen >= rlen || (curMaxCount > 20 && possibleCounts[a] < curMaxCount/10)) {
+                c = groupEnd;
+                continue;
+            }
+            for(; c<groupEnd; c++) {
+                int pos = candidates[c].second;
                 int cmplen = min(rlen - pos, alen);
                 int allowedMismatch = cmplen/allowOneMismatchForEach;
                 int mismatch = 0;
@@ -278,29 +336,29 @@ string Evaluator::checkKnownAdapters(Read** reads, long num) {
                     }
                 }
                 if(matched) {
-                    possibleCounts[adapter]++;
-                    if(curMaxCount < possibleCounts[adapter])
-                        curMaxCount = possibleCounts[adapter];
-                    mismatches[adapter] += mismatch;
+                    possibleCounts[a]++;
+                    if(curMaxCount < possibleCounts[a])
+                        curMaxCount = possibleCounts[a];
+                    mismatches[a] += mismatch;
                     break;
                 }
             }
+            c = groupEnd;
         }
     }
 
-    string adapter = "";
+    int best = -1;
     int maxCount = 0;
-    map<string, int>::iterator iter2;
-    for(iter2 = possibleCounts.begin(); iter2 != possibleCounts.end(); iter2++) {
-        if(iter2->second > maxCount) {
-            adapter = iter2->first;
-            maxCount = iter2->second;
+    for(int a=0; a<adapterNum; a++) {
+        if(possibleCounts[a] > maxCount) {
+            best = a;
+            maxCount = possibleCounts[a];
         }
     }
-    if(maxCount > checkedReads/50 || (maxCount > checkedReads/200 && mismatches[adapter] < checkedReads)) {
-        cerr << knownAdapters[adapter] << endl;
-        cerr << adapter << endl;
-        return adapter;
+    if(best >= 0 && (maxCount > checkedReads/50 || (maxCount > checkedReads/200 && mismatches[best] < checkedReads))) {
+        cerr << knownAdapters[adapters[best]] << endl;
+        cerr << adapters[best] << endl;
+        return adapters[best];
     }
     return "";
 }
