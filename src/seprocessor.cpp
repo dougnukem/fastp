@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory.h>
 #include "util.h"
+#include "fptrace.h"
 #include "jsonreporter.h"
 #include "htmlreporter.h"
 #include "adaptertrimmer.h"
@@ -326,6 +327,7 @@ bool SingleEndProcessor::processSingleEnd(ReadPack* pack, ThreadConfig* config){
 
 void SingleEndProcessor::readerTask()
 {
+    fptrace::setThreadName("fp-read");
     if(mOptions->verbose)
         loginfo("start to load data");
     long lastReported = 0;
@@ -340,9 +342,11 @@ void SingleEndProcessor::readerTask()
     reader.setReadPool(mReadPool);
     int count=0;
     bool needToBreak = false;
+    uint64_t packT0 = fptrace::now();
     while(true){
         Read* read = reader.read();
         if(!read || needToBreak){
+            fptrace::record(fptrace::READ_PACK, packT0, count);
             // the last pack
             ReadPack* pack = new ReadPack;
             pack->data = data;
@@ -370,6 +374,7 @@ void SingleEndProcessor::readerTask()
         }
         // a full pack
         if(count == PACK_SIZE || needToBreak){
+            fptrace::record(fptrace::READ_PACK, packT0, count);
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
@@ -381,6 +386,7 @@ void SingleEndProcessor::readerTask()
             memset(data, 0, sizeof(Read*)*PACK_SIZE);
             // if the processor is far behind this reader, sleep and wait to limit memory usage
             {
+                FPTRACE_SPAN(READER_WAIT);
                 std::unique_lock<std::mutex> lk(mBackpressureMtx);
                 while( mPackReadCounter - mPackProcessedCounter.load(std::memory_order_acquire) > PACK_IN_MEM_LIMIT){
                     slept++;
@@ -391,6 +397,7 @@ void SingleEndProcessor::readerTask()
             // if the writer threads are far behind this reader, sleep and wait
             // check this only when necessary
             if(readNum % (PACK_SIZE * PACK_IN_MEM_LIMIT) == 0 && mLeftWriter) {
+                FPTRACE_SPAN(READER_WAIT);
                 std::unique_lock<std::mutex> lk(mBackpressureMtx);
                 while(mLeftWriter->bufferLength() > PACK_IN_MEM_LIMIT) {
                     slept++;
@@ -399,6 +406,7 @@ void SingleEndProcessor::readerTask()
             }
             // reset count to 0
             count = 0;
+            packT0 = fptrace::now();
             // re-evaluate split size
             // TODO: following codes are commented since it may cause threading related conflicts in some systems
             /*if(mOptions->split.needEvaluation && !splitSizeReEvaluated && readNum >= mOptions->split.size) {
@@ -434,12 +442,15 @@ void SingleEndProcessor::readerTask()
 void SingleEndProcessor::processorTask(ThreadConfig* config)
 {
     SingleProducerSingleConsumerList<ReadPack*>* input = config->getLeftInput();
+    fptrace::setThreadName(("fp-work-" + to_string(config->getThreadId())).c_str());
     while(true) {
         if(config->canBeStopped()){
             break;
         }
         while(input->canBeConsumed()) {
             ReadPack* data = input->consume();
+            FPTRACE_NAMED(span, PROCESS);
+            span.a = data->count;
             processSingleEnd(data, config);
         }
         if(input->isProducerFinished()) {
@@ -451,6 +462,7 @@ void SingleEndProcessor::processorTask(ThreadConfig* config)
                 break;
             }
         } else {
+            FPTRACE_SPAN(WORKER_WAIT);
             std::unique_lock<std::mutex> lk(mBackpressureMtx);
             mBackpressureCV.wait_for(lk, std::chrono::milliseconds(1));
         }
@@ -472,6 +484,7 @@ void SingleEndProcessor::processorTask(ThreadConfig* config)
 
 void SingleEndProcessor::writerTask(WriterThread* config)
 {
+    fptrace::setThreadName("fp-write");
     while(true) {
         if(config->isCompleted()){
             // last check for possible threading related issue

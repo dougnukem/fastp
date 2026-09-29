@@ -1,6 +1,11 @@
 DIR_INC := ./inc
 DIR_SRC := ./src
 DIR_OBJ := ./obj
+# make TRACE=1 builds ./fastp-trace (per-pack stage timing, src/fptrace.h) from its own object
+# directory, so normal and trace objects never mix and switching needs no `make clean`
+ifeq ($(TRACE),1)
+DIR_OBJ := ./obj-trace
+endif
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -20,12 +25,19 @@ SRC := $(wildcard ${DIR_SRC}/*.cpp)
 OBJ := $(patsubst %.cpp,${DIR_OBJ}/%.o,$(notdir ${SRC}))
 
 TARGET := fastp
+ifeq ($(TRACE),1)
+TARGET := fastp-trace
+endif
 
 BIN_TARGET := ${TARGET}
 
 CXX ?= g++
 CXXFLAGS := -std=c++11 -pthread -g -O3 -MD -MP -I. -I${DIR_INC} $(foreach includedir,$(INCLUDE_DIRS),-I$(includedir)) $(HWY_CFLAGS) $(ISAL_CFLAGS) $(DEFLATE_CFLAGS) ${CXXFLAGS}
 LIBS := -lisal -ldeflate -lhwy -lpthread
+
+ifeq ($(TRACE),1)
+CXXFLAGS += -DFASTP_TRACE
+endif
 
 PKG_LDFLAGS := $(HWY_LIBS) $(ISAL_LIBS) $(DEFLATE_LIBS)
 
@@ -68,8 +80,8 @@ ${DIR_OBJ}/%.o:${DIR_SRC}/%.cpp
 
 .PHONY:clean
 clean:
-	@rm -rf $(DIR_OBJ)
-	@rm -f $(TARGET)
+	@rm -rf ./obj ./obj-trace
+	@rm -f fastp fastp-trace
 
 install:
 	mkdir -p $(BINDIR)

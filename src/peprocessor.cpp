@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory.h>
 #include "util.h"
+#include "fptrace.h"
 #include "adaptertrimmer.h"
 #include "basecorrector.h"
 #include "jsonreporter.h"
@@ -724,6 +725,7 @@ void PairEndProcessor::statInsertSize(Read* r1, Read* r2, OverlapResult& ov, int
 
 void PairEndProcessor::readerTask(bool isLeft)
 {
+    fptrace::setThreadName(isLeft ? "fp-read-L" : "fp-read-R");
     if(mOptions->verbose) {
         if(isLeft)
             loginfo("start to load data of read1");
@@ -757,12 +759,14 @@ void PairEndProcessor::readerTask(bool isLeft)
 
     int count=0;
     bool needToBreak = false;
+    uint64_t packT0 = fptrace::now();
     while(true){
         if(shouldStopReading)
             break;
         Read* read = reader->read();
         if(!read || needToBreak){
             // the last pack
+            fptrace::record(fptrace::READ_PACK, packT0, count);
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
@@ -800,6 +804,7 @@ void PairEndProcessor::readerTask(bool isLeft)
         }
         // a full pack
         if(count == PACK_SIZE || needToBreak){
+            fptrace::record(fptrace::READ_PACK, packT0, count);
             ReadPack* pack = new ReadPack;
             pack->data = data;
             pack->count = count;
@@ -818,6 +823,7 @@ void PairEndProcessor::readerTask(bool isLeft)
             memset(data, 0, sizeof(Read*)*PACK_SIZE);
             // if the processor is far behind this reader, sleep and wait to limit memory usage
             {
+                FPTRACE_SPAN(READER_WAIT);
                 std::unique_lock<std::mutex> lk(mBackpressureMtx);
                 if(isLeft) {
                     while(mLeftPackReadCounter - mPackProcessedCounter.load(std::memory_order_acquire) > PACK_IN_MEM_LIMIT){
@@ -835,6 +841,7 @@ void PairEndProcessor::readerTask(bool isLeft)
             // if the writer threads are far behind this producer, sleep and wait
             // check this only when necessary
             if(readNum % (PACK_SIZE * PACK_IN_MEM_LIMIT) == 0 && mLeftWriter) {
+                FPTRACE_SPAN(READER_WAIT);
                 std::unique_lock<std::mutex> lk(mBackpressureMtx);
                 while( (mLeftWriter && mLeftWriter->bufferLength() > PACK_IN_MEM_LIMIT) || (mRightWriter && mRightWriter->bufferLength() > PACK_IN_MEM_LIMIT) ){
                     slept++;
@@ -843,6 +850,7 @@ void PairEndProcessor::readerTask(bool isLeft)
             }
             // reset count to 0
             count = 0;
+            packT0 = fptrace::now();
             // re-evaluate split size
             // TODO: following codes are commented since it may cause threading related conflicts in some systems
             /*if(mOptions->split.needEvaluation && !splitSizeReEvaluated && readNum >= mOptions->split.size) {
@@ -889,6 +897,7 @@ void PairEndProcessor::readerTask(bool isLeft)
 
 void PairEndProcessor::interleavedReaderTask()
 {
+    fptrace::setThreadName("fp-read-I");
     if(mOptions->verbose)
         loginfo("start to load data");
     long lastReported = 0;
@@ -1022,6 +1031,7 @@ void PairEndProcessor::processorTask(ThreadConfig* config)
 {
     SingleProducerSingleConsumerList<ReadPack*>* inputLeft = config->getLeftInput();
     SingleProducerSingleConsumerList<ReadPack*>* inputRight = config->getRightInput();
+    fptrace::setThreadName(("fp-work-" + to_string(config->getThreadId())).c_str());
     while(true) {
         if(config->canBeStopped()){
             break;
@@ -1029,6 +1039,8 @@ void PairEndProcessor::processorTask(ThreadConfig* config)
         while(inputLeft->canBeConsumed() && inputRight->canBeConsumed()) {
             ReadPack* dataLeft = inputLeft->consume();
             ReadPack* dataRight = inputRight->consume();
+            FPTRACE_NAMED(span, PROCESS);
+            span.a = dataLeft->count;
             processPairEnd(dataLeft, dataRight, config);
         }
         if(inputLeft->isProducerFinished() && !inputLeft->canBeConsumed()) {
@@ -1036,6 +1048,7 @@ void PairEndProcessor::processorTask(ThreadConfig* config)
         } else if(inputRight->isProducerFinished() && !inputRight->canBeConsumed()) {
             break;
         } else {
+            FPTRACE_SPAN(WORKER_WAIT);
             std::unique_lock<std::mutex> lk(mBackpressureMtx);
             mBackpressureCV.wait_for(lk, std::chrono::milliseconds(1));
         }
@@ -1074,6 +1087,7 @@ void PairEndProcessor::processorTask(ThreadConfig* config)
 
 void PairEndProcessor::writerTask(WriterThread* config)
 {
+    fptrace::setThreadName("fp-write");
     while(true) {
         if(config->isCompleted()){
             // last check for possible threading related issue
