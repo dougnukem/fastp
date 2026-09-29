@@ -8,7 +8,8 @@ costs per read.
 
 ## What's recorded
 
-`make TRACE=1` defines `FASTP_TRACE` and turns on `src/fptrace.h`. Each thread appends timed
+`make TRACE=1` builds `./fastp-trace` (from its own `obj-trace/`, so it never mixes with a normal
+build and switching needs no `make clean`), with `FASTP_TRACE` defined to turn on `src/fptrace.h`. Each thread appends timed
 spans to its own buffer (no locks on the hot path). At exit the buffers are written as TSV to
 `$FASTP_TRACE_FILE` (default `fastp.trace.tsv`). Without `TRACE=1` the macros compile to
 nothing.
@@ -43,8 +44,9 @@ Checks on this PR (Ubuntu 24.04 container, synthetic PE):
 `scripts/trace_analyze.py <trace.tsv> [--json costs.json] [--png timeline.png]` reports:
 
 1. **Time by role**: exclusive seconds per span kind (nested spans are subtracted from their
-   parent), plus busy and waiting shares of the processing window. The main thread's
-   detection sampling is reported separately, outside the window.
+   parent), plus busy and waiting shares of the processing window. The window starts at the
+   first pack a reader hands off; anything before it (detection sampling on the main thread,
+   and the evaluator's own BGZF pool for BGZF input) is reported separately.
 2. **Per-read CPU cost** of each stage (ns per read) and codec rates (MB/s per thread,
    compression ratio). The JSON holds these for the reformulation cost model.
 3. **Timeline**: busy / waiting share per role per time bin, which shows phases (e.g.
@@ -68,6 +70,6 @@ _Pending: n2d-highmem-48, full-size datasets, `-w 16` and `-w 48`, gz and BGZF i
 ## Running it
 
 ```bash
-make TRACE=1 && cp fastp bin/fastp-trace && make clean && make && cp fastp bin/fastp
+make && make TRACE=1 && cp fastp fastp-trace bin/
 bash scripts/trace_run.sh bin/fastp-trace data work results/trace "rna_nova:PE wgbs:PE rna_se:SE" 16,48 gz,bgzf bin/fastp
 ```
