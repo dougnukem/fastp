@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790647572815,
+  "lastUpdate": 1790697652583,
   "repoUrl": "https://github.com/dougnukem/fastp",
   "entries": {
     "Benchmark": [
@@ -347,6 +347,240 @@ window.BENCHMARK_DATA = {
           {
             "name": "atac_hiseq_pe -w4 processing",
             "value": 1.52,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "committer": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "distinct": true,
+          "id": "4206179fef4a2793ddeb38f5fbf70b6cf309fef0",
+          "message": "feat(bench): project subset results to a full-size run and gate on that\n\nSubsets overstate changes to fixed-cost stages: pre-processing, adapter\ndetection (capped at 256K reads / 39.6M bases per mate) and the report cost\nthe same on a subset as on a full run. Each run is now also projected to a\nfull-size run (--project-reads, default 50M reads or pairs): fixed stages as\nmeasured plus processing scaled by read count. The report and the gate use\nprojected wall and CPU; measured subset numbers move to a collapsed section.\n\nChecked against 30 full-size public runs (6 datasets, 2 builds, -w 8/16/48):\nprojected wall within 8% of measured (median); base-vs-head deltas within\n3 percentage points, against 10 points for raw subset deltas.\n\nThe synthetic set grows to 300K pairs so detection reaches its cap, as it\ndoes on a full file.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-29T10:55:54-05:00",
+          "tree_id": "4c85e09cf4a7e061bee8b43d388d17f921f648fe",
+          "url": "https://github.com/dougnukem/fastp/commit/4206179fef4a2793ddeb38f5fbf70b6cf309fef0"
+        },
+        "date": 1790697651619,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "synthetic_pe -w1 projected wall",
+            "value": 755.818,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w1 projected CPU",
+            "value": 1176.898,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w1 peak RSS",
+            "value": 1275.797,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_pe -w1 wall time",
+            "value": 5.101,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w1 CPU (user+sys)",
+            "value": 7.627,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w1 adapter detection",
+            "value": 0.504,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w1 processing",
+            "value": 4.531,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 projected wall",
+            "value": 373.991,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 projected CPU",
+            "value": 1409.925,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 peak RSS",
+            "value": 1272.395,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_pe -w4 wall time",
+            "value": 2.822,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 CPU (user+sys)",
+            "value": 9.043,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 adapter detection",
+            "value": 0.499,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 processing",
+            "value": 2.241,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 projected wall",
+            "value": 326.739,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 projected CPU",
+            "value": 489.101,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 peak RSS",
+            "value": 1235.875,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_se -w1 wall time",
+            "value": 2.286,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 CPU (user+sys)",
+            "value": 3.26,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 adapter detection",
+            "value": 0.288,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w1 processing",
+            "value": 1.958,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected wall",
+            "value": 180.242,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected CPU",
+            "value": 651.951,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 peak RSS",
+            "value": 1233.266,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_se -w4 wall time",
+            "value": 1.415,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 CPU (user+sys)",
+            "value": 4.236,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 adapter detection",
+            "value": 0.284,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 processing",
+            "value": 1.079,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 projected wall",
+            "value": 308.453,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 projected CPU",
+            "value": 486.442,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 peak RSS",
+            "value": 1226.969,
+            "unit": "MB"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 wall time",
+            "value": 3.433,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 CPU (user+sys)",
+            "value": 5.213,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 adapter detection",
+            "value": 0.26,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w1 processing",
+            "value": 3.081,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected wall",
+            "value": 155.131,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected CPU",
+            "value": 566.399,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 peak RSS",
+            "value": 1219.621,
+            "unit": "MB"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 wall time",
+            "value": 1.863,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 CPU (user+sys)",
+            "value": 5.976,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 adapter detection",
+            "value": 0.255,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 processing",
+            "value": 1.548,
             "unit": "s"
           }
         ]
