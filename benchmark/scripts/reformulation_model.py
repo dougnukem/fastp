@@ -24,7 +24,9 @@ Reformulations (see reformulations.md for when each is useful):
   D2     parallel decompression of ordinary gzip in the reader (rapidgzip-style)
   D3     -z 1 output
   D4     uncompressed output streamed into the next tool (no compress here, no inflate there)
-  A      offload per-read QC to a GPU; CPU keeps inflate, parse (into SoA), serialise, compress
+  D5     flat-batch parser on the CPU (index + pack instead of a Read object per record)
+  A      offload per-read QC to a GPU; CPU keeps inflate, parse (into SoA, as D5), serialise, compress.
+         Compare A with D5, not with base: D5 is A's parser change without the GPU
   B      GPU-resident: GPU inflates, parses, QCs and compresses; CPU only moves bytes
   C      fused into a GPU aligner: QC runs on reads the aligner already holds on the GPU; the
          trimmed .fastq.gz is never written or re-read
@@ -128,6 +130,13 @@ row('D3 -z 1', d + p + w + c / z_speed + wr, 0, max(reader_wall, R * (w + c / z_
 downstream_inflate = d * soa['kept'] / soa['reads']            # next tool no longer inflates trimmed reads
 row('D4 uncompressed stream to aligner', d + p + w + wr, 0, max(reader_wall, R * (w + wr) / 1e9 / W),
     -downstream_inflate, 'no output compression; negative transform = downstream inflate avoided')
+
+# ---- D5: cheaper parsing on the CPU. The reader indexes records and packs them into a flat
+# batch (soa_pack index + pack) instead of building a heap Read object per record. This is a
+# lower bound: fastp's per-read code would have to work on views into the batch.
+d5_reader = reads * (d + S['index'] + S['pack']) / 1e9
+row('D5 flat-batch parser (CPU)', d + S['index'] + S['pack'] + w + c + wr, 0, max(d5_reader, worker_wall),
+    S['index'] + S['pack'] - p, f'reader {d5_reader:.0f}s vs workers {worker_wall:.0f}s; transform < 0 = parse CPU saved')
 
 if gpu and 'kernel' in gpu:
     K = gpu['kernel']
