@@ -26,18 +26,118 @@ So wall(N) ≈ pre + detect + N / throughput(threads, L, library type) + finaliz
 
 ## Measured constants
 
-_Pending: full-size runs of complete public datasets (upstream master vs this
-stack at `-w 8`, `-w 16`, default, and `-w 48`), with stage timings, CPU, peak
-RSS and output digests._
+Complete public runs on a 48-vCPU (24-core) n2d VM, cold page cache, 2 reps
+with alternating order. "master" is upstream 8a2397b; "stack" is #723 plus the
+adapter index, memory cap and pull claiming. Raw data: `results/full-2026-09.tsv`.
+
+| dataset | run | reads (M) | read len | fixed stages: master → stack | throughput M/s, stack `-w 8` / `16` / `48` | wall `-w 16`: master → stack |
+|---|---|---|---|---|---|---|
+| RNA NovaSeq (PE) | SRR10007843 | 31.0 | 150 | 7.2s → 1.2s | 0.30 / 0.55 / 0.42 | 72s → 58s (−20%) |
+| WGBS NextSeq (PE) | ERR10308506 | 28.4 | 140 | 30.1s → 18.5s | 0.42 / 0.55 / 0.40 | 85s → 70s (−17%) |
+| miRNA HiSeq (SE) | ERR10223911 | 89.2 | 51 | 0.6s → 0.5s | 0.82 / 0.81 / 0.56 | 109s → 111s (+2%) |
+| ATAC NextSeq (PE) | ERR10905326 | 42.7 | 151 | 1.3s → 1.3s | 0.41 / 0.55 / 0.43 | 83s → 79s (−5%) |
+| RNA HiSeq (SE) | ERR10669429 | 42.6 | 75 | 1.5s → 0.5s | 1.09 / 1.04 / 0.66 | 45s → 42s (−8%) |
+| ATAC HiSeq (PE) | SRR891268 | 192.9 | 50 | 1.1s → 0.8s | 0.71 / 0.91 / 0.67 | 232s → 213s (−8%) |
+
+Reads are pairs for PE. Output was byte-identical (decompressed) across both
+builds and all thread counts on every dataset. Master deadlocks at `-w 48`
+(#721), so that column is the stack only.
+
+- Fixed stages cost the same on a 4M-read subset as on the full run (e.g.
+  RNA NovaSeq 7.1s vs 7.2s, WGBS 31.8s vs 30.6s), as the cost model predicts.
+- WGBS keeps 18.5s of fixed cost in the stack: bisulfite reads match no known
+  adapter, so detection falls through to the seed search, which the 8-mer
+  index doesn't cover.
+- Every dataset is slower at `-w 48` than at `-w 16` (see profiling below).
 
 ## Does a subset predict the full run?
 
-_Pending: each full run's time predicted from subset measurements with the model
-above, compared with the measured time._
+Each full run's wall time predicted from the 4M-read subset of the same run
+(30 cells: 6 datasets × 2 builds × `-w 8/16/48`):
+
+| method | median error | worst |
+|---|---|---|
+| naive: subset wall × N/n | 37% | +241% (WGBS, where fixed cost is large) |
+| model: subset fixed + subset processing × N/n | 8% | +39% |
+
+For comparing two builds, the relevant error is on the delta between them:
+
+| method | median error vs measured full-run delta | worst |
+|---|---|---|
+| raw subset delta | 10.2 points | 25.9 points |
+| projected delta | 3.2 points | 10.0 points |
+
+For example, RNA NovaSeq at `-w 8`: the subset shows −27%, the projection −3%,
+and the full run measured −7%. The benchmark CI job reports projected numbers
+for this reason.
+
+The model overpredicts two datasets (RNA HiSeq SE +22–39%, ATAC HiSeq
++19–28%): their subsets processed 25–40% slower per read than the full runs.
+The subsets are the first reads of each run, recompressed at gzip level 1;
+the likely cause is that their per-read input cost differs from the original
+files, but that isn't confirmed. That offset is
+the same for both builds, which is why deltas project well even when absolute
+times don't.
+
+## A code-path model of throughput
+
+Processing throughput is set by whichever resource saturates first:
+
+    throughput ≈ min( reader capacity per mate(L),
+                      workers / Σ CPU-µs per read over the active code paths,
+                      writer capacity )
+    wall ≈ fixed stages + N / throughput
+
+The per-read cost of each code path comes from the on-CPU profile
+(`scripts/profile_breakdown.py`); which paths are active depends on options
+(adapter trimming by sequence, merge, dedup, polyX, UMI). RNA NovaSeq,
+`-w 16`, per read pair:
+
+| code path | CPU-µs per pair (stack) | share |
+|---|---|---|
+| adapter trim (per read, `Matcher`) | 12.6 | 41% |
+| output compression | 6.1 | 20% |
+| stats/QC | 4.2 | 14% |
+| FASTQ parse | 2.6 | 9% |
+| queue/sync (waiting) | 1.4 | 5% |
+| overlap analysis, dedup | 2.3 | 8% |
+| input decompression | 0.6 | 2% |
+| adapter detection | 0.01 | 0% |
+
+Checks against measurement at `-w 16` (measured = processing-stage throughput
+of the timed runs):
+
+- RNA NovaSeq, stack: 16 workers / 29 µs of work per pair = 0.55M pairs/s
+  predicted; 0.55M/s measured, with 17 of 19 threads saturated. Compute-bound.
+- RNA NovaSeq, master: the same 30 µs per pair, but 0.48M/s with workers at
+  82%, never saturated. The speedup at `-w 16` comes from the stack keeping
+  workers fed, not from detection.
+- ATAC HiSeq (50bp), stack: worker ceiling 1.25M/s, measured 0.91M/s with the
+  two input readers saturated. Short reads are reader-bound: parsing cost is per
+  read, while trimming cost grows with length.
+
+Where the model fails: at `-w 48` it predicts 1.24M/s for RNA NovaSeq; 0.42M/s
+was measured. The VM has 24 physical cores, so 48 workers plus readers and
+writers (51 threads) share cores, and CPU per pair rises from 30 to 43 µs.
+Even 24 cores would allow 0.79M/s, so there's a further loss this model
+doesn't explain. Keep `-w` at or below physical cores minus the reader and
+writer threads until that's understood.
+
+To rerun after a code change: profile the new build with `profile_run.sh`, run
+`profile_breakdown.py`, and compare per-path costs. A path that got cheaper
+raises the worker ceiling only if workers were the saturated resource.
 
 ## Estimating runtime for a new dataset
 
-_Pending: worked example from read count, read length and library type._
+1. Fixed stages: take the value for a similar library type and read length
+   from the table above (1–7s typically; up to 30s when no known adapter
+   matches and detection falls back to the seed search).
+2. Throughput: at `-w 16` on this VM class, about 0.55M pairs/s for 150bp PE
+   and 0.9–1.0M reads/s for 50–75bp reads; use the code-path model to adjust for
+   options that add or remove work.
+3. wall ≈ fixed + N / throughput. For example, 50M pairs of 150bp PE RNA:
+   1.2 + 50/0.55 ≈ 92s on the stack at `-w 16`; about 111s on master
+   (0.48M/s, 7.2s fixed).
 
 ## Profiling a run
 
@@ -45,6 +145,7 @@ _Pending: worked example from read count, read length and library type._
 
 - **On-CPU:** `perf record` DWARF stacks → flame graph; `perf stat` for IPC,
   cache misses and context switches. Shows which functions consume CPU.
+  `profile_breakdown.py` turns the stacks into CPU-µs per read per code path.
 - **Per-thread utilisation:** `pidstat -t 1`. The pipeline stage that sits
   at 100% (reader, workers, or writer) is the bottleneck; the others show idle time.
 - **Off-CPU:** `offcputime` (BPF) stacks for time spent blocked, such as
@@ -52,7 +153,19 @@ _Pending: worked example from read count, read length and library type._
   stages are waiting.
 - **I/O:** `iostat -x 1`.
 
-_Pending: findings for the profiled datasets._
+Profiled: RNA NovaSeq and ATAC HiSeq, master and stack at `-w 16`, stack at
+`-w 48`. Findings:
+
+- Per-read adapter trimming (`Matcher::matchWithOneInsertion` via
+  `AdapterTrimmer::trimBySequence`) is the largest cost, 31–43% of CPU in every
+  profile. None of the changes so far touch it; it's the biggest remaining target.
+- Output compression is second (18–25%), then stats/QC (10–14%).
+- Adapter detection is under 1% of CPU on full files.
+- Going from `-w 16` to `-w 48` adds 40% CPU with no speedup; queue/sync time
+  rises from about 5% to 10–17% (workers waiting).
+- Not captured: hardware counters (these VMs expose no PMU, so no IPC or cache
+  data) and off-CPU stacks (the BPF capture failed; `profile_run.sh` now keeps
+  its stderr in `offcpu.err`).
 
 A next step, if the profiles point at stage balance: a trace build that
 timestamps each pack at read, claim, process and write, and records queue depth

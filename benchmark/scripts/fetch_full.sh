@@ -14,7 +14,7 @@ for spec in $SPECS; do
       *) [ "$layout" = SE ] && m=1 || continue ;;
     esac
     dest="$D/${name}_R$m.fastq.gz"
-    if [ ! -s "$dest" ]; then curl -sf -o "$dest.part" "https://$u"; mv "$dest.part" "$dest"; fi
+    if [ ! -s "$dest" ]; then curl -sf --retry 20 --retry-all-errors -C - -o "$dest.part" "https://$u"; mv "$dest.part" "$dest"; fi
   done
 done
 ls -la "$D"

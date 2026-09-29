@@ -8,9 +8,9 @@
 # Outputs in out_dir:
 #   stat.txt      perf stat: IPC, cache misses, context switches, page faults
 #   flame.svg     on-CPU flame graph (DWARF stacks, 49 Hz)
-#   top.txt       hottest symbols per thread
 #   threads.txt   per-thread CPU% each second: shows which pipeline stage is saturated
-#   offcpu.svg    where threads block (condition variables, sleeps, I/O), 120 s window
+#   offcpu.svg    where threads block (condition variables, sleeps, I/O), 120 s window;
+#                 BPF errors go to offcpu.err
 #   io.txt        iostat -x 1
 set -uo pipefail
 FASTP=${1:?usage: profile_run.sh <fastp> <data_dir> <name> <layout> <threads> <out_dir>}
@@ -28,9 +28,8 @@ perf stat -e task-clock,cycles,instructions,cache-references,cache-misses,contex
   "$FASTP" $args -j "$w/r.json" -h "$w/r.html" 2> "$o/fastp.stderr" & sp=$!
 sleep 5; pid=$(pgrep -n -x "$(basename "$FASTP" | cut -c1-15)")
 pidstat -t -u -p "$pid" 1 > "$o/threads.txt" & pp=$!
-(sleep 60; sudo offcputime-bpfcc -f -p "$pid" 120 > "$o/offcpu.txt" 2>/dev/null) & op=$!
+(sleep 60; sudo offcputime-bpfcc -f -p "$pid" 120 > "$o/offcpu.txt" 2> "$o/offcpu.err") & op=$!
 wait $sp; wait $op; kill $pp $iop 2>/dev/null
-perf report -i "$o/perf.data" --no-children --sort tid,sym --stdio 2>/dev/null | head -150 > "$o/top.txt"
 perf script -i "$o/perf.data" 2>/dev/null | "$FG/stackcollapse-perf.pl" > "$o/folded.txt"
 "$FG/flamegraph.pl" --title "$(basename "$FASTP") -w $t $name" "$o/folded.txt" > "$o/flame.svg"
 "$FG/flamegraph.pl" --title "$(basename "$FASTP") -w $t $name off-CPU" --colors io --countname us "$o/offcpu.txt" > "$o/offcpu.svg" 2>/dev/null
