@@ -51,6 +51,8 @@ W = opt('--workers', 16, int)
 V = opt('--vcpus', 48, int)
 cpu_price, gpu_price = opt('--cpu-price', None, float), opt('--gpu-price', None, float)
 DS = opt('--dataset')
+if DS is None and (opt('--prep') or opt('--codec')):
+    print('warning: no --dataset; --prep/--codec rows from every dataset are combined', file=sys.stderr)
 
 
 def tsv(name):
@@ -89,7 +91,8 @@ row('base', d + p + w + c + wr, 0, base_wall,
     extra=f'reader {reader_wall:.0f}s vs workers {worker_wall:.0f}s')
 
 # ---- D1: BGZF input. Reader keeps parse; inflate moves to a pool of (V - W - 4)/mates threads
-pool = max(1, (V - (W + 4)) // mates)
+# fastp: PE budget (nproc - (w + 4)) / gz inputs (peprocessor.cpp), SE (nproc - w - 3) (seprocessor.cpp)
+pool = max(1, (V - (W + 4)) // mates) if mates == 2 else max(1, V - W - 3)
 d1_reader = reads * (p + d / pool) / 1e9
 conv_ns = 0.0
 if opt('--prep'):
@@ -148,26 +151,33 @@ for speedup, sp_label in (scenarios if gpu and 'kernel' in gpu else []):
         f'PCIe {pcie_a:.0f} ns/read; QC share of process {qc_cpu / w:.0%}')
 
     # ---- B: GPU-resident
-    inflate = None
-    src = ''
-    if gpu.get('bgzf', {}).get('GBps_uncompressed'):
-        inflate = text_b / (gpu['bgzf']['GBps_uncompressed'] * 1e9) * 1e9; src = 'BGZF batched'
+    # ordinary sequencer .gz can only use the single-stream rate; the batched BGZF rate
+    # applies only when the input really is BGZF (--bgzf-input)
+    inflate, src = None, ''
     g1 = gpu.get('gzip1', {}).get('nvlzcat', {})
-    if isinstance(g1, dict) and g1.get('GBps_uncompressed'):
-        g1ns = text_b / (g1['GBps_uncompressed'] * 1e9) * 1e9
-        if inflate is None or not opt('--bgzf-input'):
-            inflate, src = g1ns, 'single-stream gzip (nvlzcat)'
-    comp, comp_ratio = None, ratio
-    for k, v in (gpu.get('deflate') or {}).items():
-        if isinstance(v, dict) and v.get('GBps_in') and k.startswith('Deflate'):
-            comp = kept_text_b / (v['GBps_in'] * 1e9) * 1e9; comp_ratio = v['ratio']
+    if '--bgzf-input' in sys.argv:
+        if gpu.get('bgzf', {}).get('GBps_uncompressed'):
+            inflate = text_b / (gpu['bgzf']['GBps_uncompressed'] * 1e9) * 1e9; src = 'BGZF batched'
+    elif isinstance(g1, dict) and g1.get('GBps_uncompressed'):
+        inflate, src = text_b / (g1['GBps_uncompressed'] * 1e9) * 1e9, 'single-stream gzip (nvlzcat)'
+    # output must stay .gz: raw Deflate chunks (framed as gzip members on the CPU, like BGZF) or
+    # nvlzcat's gzip; GDeflate is not gzip-compatible. Take the fastest config whose ratio is
+    # within 90% of fastp's libdeflate -z 4 ratio, else the best ratio available.
+    cands = [(k, v) for k, v in (gpu.get('deflate') or {}).items()
+             if isinstance(v, dict) and v.get('GBps_in') and v.get('ratio') and not k.startswith('GDeflate')]
+    good = [kv for kv in cands if kv[1]['ratio'] >= 0.9 * ratio]
+    pick = max(good, key=lambda kv: kv[1]['GBps_in']) if good else (max(cands, key=lambda kv: kv[1]['ratio']) if cands else None)
+    comp, comp_ratio, comp_name = None, ratio, '-'
+    if pick:
+        comp_name, v = pick
+        comp, comp_ratio = kept_text_b / (v['GBps_in'] * 1e9) * 1e9, v['ratio']
     if inflate is not None and comp is not None:
         parse_gpu = S['index'] / speedup                      # structural scan: assume it parallelises like the kernel
         b_gpu = inflate + parse_gpu + qc_gpu + comp
         pcie_b = (gz_in_b / h2d + kept_text_b / comp_ratio / d2h) * 1e9
         b_cpu = wr + 50                                        # file I/O + orchestration
         row(f'B GPU-resident, QC {sp_label}', b_cpu, b_gpu + pcie_b, R * max(b_gpu, pcie_b) / 1e9, 0,
-            f'inflate: {src}; output ratio {comp_ratio:.2f} vs libdeflate {ratio:.2f}')
+            f'inflate: {src}; compress: {comp_name}, ratio {comp_ratio:.2f} vs libdeflate {ratio:.2f}')
     # ---- C: fused into GPU aligner
     c_gpu = qc_gpu + S['index'] / speedup
     saved_downstream = d * soa['kept'] / soa['reads']        # aligner no longer re-inflates trimmed reads

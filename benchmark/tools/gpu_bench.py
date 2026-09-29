@@ -33,6 +33,19 @@ res = {'device': cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}
 MAX = int(float(opt('--max-gb', 4)) * 1e9)
 
 
+def free_gpu():
+    """Release cached device memory so the next section (or an nvlzcat subprocess) can use it."""
+    import gc
+    gc.collect()
+    cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+
+
+def nbytes(x):
+    """Size of an nvCOMP/CuPy device array without copying it to the host."""
+    return int(cp.asarray(x).nbytes)
+
+
 def timed(fn, reps=5):
     """Median seconds of fn() over reps, synchronised with CUDA events."""
     ts = []
@@ -136,6 +149,8 @@ if soa and os.path.exists(soa + '.soa'):
         'qsum_matches_cpu': int(qsum.get().sum()) == qsum_expect,
     }
     print('kernel', res['kernel'], file=sys.stderr)
+    del dseq, dqual, dlens, dend, dpass, qsum, base
+    free_gpu()
 
 # ---------------- nvCOMP
 try:
@@ -170,7 +185,7 @@ if nvcomp and opt('--bgzf'):
         cfg = codec.decompression_config(dchunks) if hasattr(codec, 'decompression_config') else None
         dec_fn = (lambda: codec.decode(dchunks, decompression_config=cfg)) if cfg is not None else (lambda: codec.decode(dchunks))
         out = dec_fn()
-        got = sum(int(np.asarray(cp.asarray(x)).size) for x in out)
+        got = sum(nbytes(x) for x in out)
         t = timed(dec_fn, reps=3)
         res['bgzf'] = {'blocks': len(chunks), 'compressed_bytes': comp_bytes, 'uncompressed_bytes': sum(sizes),
                        'size_ok': got == sum(sizes), 'decode_s': t, 'GBps_uncompressed': sum(sizes) / t / 1e9,
@@ -178,12 +193,15 @@ if nvcomp and opt('--bgzf'):
     except Exception as e:  # record, keep going
         res['bgzf'] = {'error': repr(e)}
     print('bgzf', res['bgzf'], file=sys.stderr)
+    dchunks = out = None
+    free_gpu()
 
 if opt('--gz'):
     gz = opt('--gz'); g1 = {}
     usize = None
     if opt('--plain') and os.path.exists(opt('--plain')):
         usize = os.path.getsize(opt('--plain'))
+    free_gpu()
     if shutil.which('nvlzcat'):
         # decompression is nvlzcat's default mode (-c would compress)
         runs = []
@@ -204,12 +222,14 @@ if opt('--gz'):
             codec = nvcomp.Codec(algorithm='Gzip', bitstream_kind=nvcomp.BitstreamKind.RAW)
             arr = nvcomp.as_array(np.fromfile(gz, np.uint8)).cuda()
             out = codec.decode(arr)
-            n = int(np.asarray(cp.asarray(out)).size)
+            n = nbytes(out)
             t = timed(lambda: codec.decode(arr), reps=3)
             g1['python_gzip_codec'] = {'uncompressed_bytes': n, 'decode_s': t, 'GBps_uncompressed': n / t / 1e9,
                                        'note': 'whole file as one buffer, device-resident'}
         except Exception as e:
             g1['python_gzip_codec'] = {'error': repr(e)}
+    arr = out = None
+    free_gpu()
     res['gzip1'] = g1
     print('gzip1', g1, file=sys.stderr)
 
@@ -226,12 +246,16 @@ if nvcomp and opt('--plain'):
                                      bitstream_kind=nvcomp.BitstreamKind.RAW)
                 enc = codec.encode(darr)
                 t = timed(lambda: codec.encode(darr), reps=3)
-                csize = int(np.asarray(cp.asarray(enc)).size)
+                csize = nbytes(enc)
                 comp[f'{alg}/{chunk}/t{atype}'] = {'in_bytes': int(data.size), 'out_bytes': csize,
                                                    'ratio': data.size / csize, 'encode_s': t, 'GBps_in': data.size / t / 1e9,
                                                    'note': 'device-resident; add PCIe for in/out bytes'}
             except Exception as e:
                 comp[f'{alg}/{chunk}/t{atype}'] = {'error': repr(e)}
+            enc = None
+            free_gpu()
+    darr = None
+    free_gpu()
     if shutil.which('nvlzcat'):
         # streaming GPU gzip compression (nvCOMP >= 5.3), standard .gz output, levels 0 (fast) .. 5
         for a in (0, 1, 3):

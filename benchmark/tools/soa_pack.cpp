@@ -119,7 +119,9 @@ int main(int argc, char** argv) {
             r.len = (uint32_t)(e - (b + pos)); pos = e - b + 1;
             e = (const char*)memchr(b + pos, '\n', fsz - pos); if (!e) break; pos = e - b + 1;
             r.qual = pos; e = (const char*)memchr(b + pos, '\n', fsz - pos);
+            size_t qualLen = (e ? (size_t)(e - b) : fsz) - r.qual;
             pos = e ? (size_t)(e - b + 1) : fsz;
+            if (qualLen != r.len) { fprintf(stderr, "skipping malformed record at byte %llu\n", (unsigned long long)r.name); continue; }
             if (r.len > L) L = r.len;
             recs.push_back(r);
         }
