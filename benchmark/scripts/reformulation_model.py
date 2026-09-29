@@ -23,6 +23,7 @@ Reformulations (see reformulations.md for when each is useful):
          sequencer's output is ordinary gzip
   D2     parallel decompression of ordinary gzip in the reader (rapidgzip-style)
   D3     -z 1 output
+  D4     uncompressed output streamed into the next tool (no compress here, no inflate there)
   A      offload per-read QC to a GPU; CPU keeps inflate, parse (into SoA), serialise, compress
   B      GPU-resident: GPU inflates, parses, QCs and compresses; CPU only moves bytes
   C      fused into a GPU aligner: QC runs on reads the aligner already holds on the GPU; the
@@ -119,6 +120,11 @@ if opt('--codec'):
         z_speed = lv['1'] / lv['4']
 row('D3 -z 1', d + p + w + c / z_speed + wr, 0, max(reader_wall, R * (w + c / z_speed + wr) / 1e9 / W),
     extra=f'compress x{z_speed:.1f} faster, output larger')
+
+# ---- D4: stream uncompressed output straight into the next tool (--stdout / named pipe)
+downstream_inflate = d * soa['kept'] / soa['reads']            # next tool no longer inflates trimmed reads
+row('D4 uncompressed stream to aligner', d + p + w + wr, 0, max(reader_wall, R * (w + wr) / 1e9 / W),
+    -downstream_inflate, 'no output compression; negative transform = downstream inflate avoided')
 
 if gpu and 'kernel' in gpu:
     K = gpu['kernel']

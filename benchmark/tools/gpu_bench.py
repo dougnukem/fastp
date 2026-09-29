@@ -165,7 +165,7 @@ def bgzf_blocks(path, limit):
 if nvcomp and opt('--bgzf'):
     try:
         chunks, sizes, comp_bytes = bgzf_blocks(opt('--bgzf'), MAX)
-        codec = nvcomp.Codec(algorithm='Deflate', bitstream_kind='RAW')
+        codec = nvcomp.Codec(algorithm='Deflate', bitstream_kind=nvcomp.BitstreamKind.RAW)
         dchunks = [nvcomp.as_array(c).cuda() for c in chunks]
         cfg = codec.decompression_config(dchunks) if hasattr(codec, 'decompression_config') else None
         dec_fn = (lambda: codec.decode(dchunks, decompression_config=cfg)) if cfg is not None else (lambda: codec.decode(dchunks))
@@ -186,9 +186,12 @@ if opt('--gz'):
         usize = os.path.getsize(opt('--plain'))
     if shutil.which('nvlzcat'):
         # decompression is nvlzcat's default mode (-c would compress)
-        s = time.time()
-        p = subprocess.run(f'nvlzcat -f {gz} | wc -c', shell=True, capture_output=True, text=True)
-        w = time.time() - s
+        runs = []
+        for _ in range(3):
+            s = time.time()
+            p = subprocess.run(f'nvlzcat -f {gz} | wc -c', shell=True, capture_output=True, text=True)
+            runs.append(time.time() - s)
+        w = sorted(runs)[1]
         n = int(p.stdout.strip() or 0)
         g1['nvlzcat'] = {'wall_s': w, 'uncompressed_bytes': n, 'GBps_uncompressed': n / w / 1e9 if n else None,
                          'stderr': p.stderr[-300:], 'note': 'end to end from page cache: file read, PCIe, inflate, stdout'}
@@ -198,7 +201,7 @@ if opt('--gz'):
         g1['nvlzcat'] = 'not on PATH (nvCOMP >= 5.2 tarball ships it)'
     if nvcomp and os.path.getsize(gz) <= MAX:
         try:
-            codec = nvcomp.Codec(algorithm='Gzip')
+            codec = nvcomp.Codec(algorithm='Gzip', bitstream_kind=nvcomp.BitstreamKind.RAW)
             arr = nvcomp.as_array(np.fromfile(gz, np.uint8)).cuda()
             out = codec.decode(arr)
             n = int(np.asarray(cp.asarray(out)).size)
@@ -215,16 +218,20 @@ if nvcomp and opt('--plain'):
     darr = nvcomp.as_array(data).cuda()
     comp = {}
     for alg in ('Deflate', 'GDeflate'):
-        for chunk in (65536,):
+        for chunk in (65536, 1 << 20):
+          for atype in (1, 2, 4):
             try:
-                codec = nvcomp.Codec(algorithm=alg, chunk_size=chunk)
+                # RAW chunks, like BGZF blocks without the 18/8-byte gzip framing
+                codec = nvcomp.Codec(algorithm=alg, uncomp_chunk_size=chunk, algorithm_type=atype,
+                                     bitstream_kind=nvcomp.BitstreamKind.RAW)
                 enc = codec.encode(darr)
                 t = timed(lambda: codec.encode(darr), reps=3)
                 csize = int(np.asarray(cp.asarray(enc)).size)
-                comp[f'{alg}/{chunk}'] = {'in_bytes': int(data.size), 'out_bytes': csize, 'ratio': data.size / csize,
-                                          'encode_s': t, 'GBps_in': data.size / t / 1e9}
+                comp[f'{alg}/{chunk}/t{atype}'] = {'in_bytes': int(data.size), 'out_bytes': csize,
+                                                   'ratio': data.size / csize, 'encode_s': t, 'GBps_in': data.size / t / 1e9,
+                                                   'note': 'device-resident; add PCIe for in/out bytes'}
             except Exception as e:
-                comp[f'{alg}/{chunk}'] = {'error': repr(e)}
+                comp[f'{alg}/{chunk}/t{atype}'] = {'error': repr(e)}
     if shutil.which('nvlzcat'):
         # streaming GPU gzip compression (nvCOMP >= 5.3), standard .gz output, levels 0 (fast) .. 5
         for a in (0, 1, 3):
