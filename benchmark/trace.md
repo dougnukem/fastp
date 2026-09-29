@@ -65,7 +65,77 @@ full-size results below are what count.
 
 ## Results
 
-_Pending: n2d-highmem-48, full-size datasets, `-w 16` and `-w 48`, gz and BGZF input._
+Same box, datasets and binary as [codec-io.md](codec-io.md#results). gz→gz output, gz or
+BGZF input, `-w 16` and `-w 48`. Reports, JSON and two timeline PNGs are in
+[`results/trace-2026-09/`](results/trace-2026-09/). Costs are CPU ns per read (all mates).
+"inflate" for BGZF cells is the pool's `bgzf_block` time.
+
+| cell | window s | readers busy | workers busy / waiting | inflate | parse | per-read work | compress | verdict |
+|---|---|---|---|---|---|---|---|---|
+| atac_hiseq.bgzf.w16 | 185 | 81% | 77% / 23% | 284 | 779 | 4209 | 1664 | Mixed |
+| atac_hiseq.bgzf.w48 | 269 | 72% | 20% / 80% | 237 | 996 | 4889 | 1817 | Mixed |
+| atac_hiseq.gz.w16 | 189 | 89% | 71% / 29% | 180 | 672 | 3935 | 1570 | Reader-bound |
+| atac_hiseq.gz.w48 | 259 | 88% | 21% / 79% | 194 | 967 | 4828 | 1817 | Reader-bound |
+| rna_nova.bgzf.w16 | 56 | 48% | 90% / 10% | 567 | 853 | 10082 | 2873 | Worker-bound |
+| rna_nova.bgzf.w48 | 52 | 65% | 41% / 59% | 501 | 1082 | 12998 | 3449 | Mixed |
+| rna_nova.gz.w16 | 52 | 65% | 91% / 9% | 300 | 783 | 9380 | 2714 | Worker-bound |
+| rna_nova.gz.w48 | 50 | 92% | 44% / 56% | 344 | 1103 | 13188 | 3461 | Reader-bound |
+| rna_se.bgzf.w16 | 44 | 79% | 48% / 52% | 334 | 812 | 6008 | 1899 | Mixed |
+| rna_se.bgzf.w48 | 55 | 69% | 14% / 86% | 268 | 887 | 6477 | 1922 | Mixed |
+| rna_se.gz.w16 | 41 | 96% | 46% / 54% | 184 | 751 | 5387 | 1715 | Reader-bound |
+| rna_se.gz.w48 | 53 | 87% | 14% / 86% | 194 | 893 | 6369 | 1911 | Reader-bound |
+| wgbs.bgzf.w16 | 40 | 68% | 81% / 19% | 476 | 897 | 6190 | 2966 | Worker-bound |
+| wgbs.bgzf.w48 | 50 | 61% | 25% / 75% | 427 | 1006 | 7182 | 3217 | Mixed |
+| wgbs.gz.w16 | 40 | 91% | 76% / 24% | 286 | 799 | 5699 | 2739 | Reader-bound |
+| wgbs.gz.w48 | 48 | 91% | 25% / 74% | 315 | 1001 | 7105 | 3190 | Reader-bound |
+
+Trace overhead (`overhead.tsv`, one normal and one traced run per cell) is within run-to-run
+noise: −3% to +5%.
+
+Findings:
+
+1. **With ordinary gzip input, 6 of 8 cells are reader-bound.** The one reader thread per mate
+   is 87–96% busy while workers wait 24–86% of the time. At `-w 16` only `rna_nova`
+   (150 bp reads, the most per-read work) is worker-bound.
+2. **The reader's cost is parsing, not gzip.** Building `Read` objects costs 670–1100 ns per
+   read, 3–5× the 180–340 ns of ISA-L inflate. BGZF input moves inflate off the reader but
+   leaves the parse, which is why it doesn't help ([codec-io.md](codec-io.md#results)).
+3. **At `-w 48` every stage gets 15–40% slower per read**: parse 783 → 1103 ns, per-read
+   work 9380 → 13188 ns (rna_nova). The 48 vCPUs are 24 cores with 2 SMT threads each, so
+   the serial reader shares a core with a worker. That's the most likely reason `-w 48` is
+   slower overall. Workers also spend more time in `offset_wait` (ordered output; 3 s → 99 s
+   summed).
+4. **Per-read work scales with read length at ~65–80 ns per base**, for SE and PE alike (rna_se SE
+   75 bp: 5.4 µs; wgbs PE 90 bp: 5.7 µs; rna_nova PE 150 bp: 9.4 µs). So PE overlap analysis
+   isn't what makes it expensive.
+5. **What the per-read work is** (`perf-rna_nova-w16-workers.txt`, worker threads, self
+   time): `Matcher::matchWithOneInsertion` **33%**, `Stats::statRead` 11%, libdeflate
+   compression ~20% (inclusive), `countMismatchesBounded` 10%, duplication `checkPair` 4%,
+   PE `OverlapAnalysis` 3%. Adapter search by sequence (`trimBySequence`, inclusive) is
+   **36%** of worker CPU.
+
+### `trimBySequence`'s one-gap search doesn't advance through the read
+
+The two one-gap loops in `AdapterTrimmer::trimBySequence` step `pos` through the read but
+call `Matcher::matchWithOneInsertion(rdata, adata, ...)` and `(adata, rdata, ...)` without
+`+ pos`. The exact-match loop just above correctly passes `rdata + startOffset + pos`. So
+every iteration compares the **start of the read** against the adapter, with a shrinking
+length. An adapter with a one-base indel is only ever looked for at position 0.
+It dates to `eb461d5` (2025-06-02, "support one base insertion/deletion in SE mode adapter
+trimming") and is in every release since v0.26.0. No existing issue mentions it.
+
+Adding `+ pos` to both calls on 2M reads (n2d-highmem-48, `-w 16`; `fastp test` passes):
+
+| dataset | adapter-trimmed reads (upstream → fixed) | changed records | user CPU |
+|---|---|---|---|
+| rna_nova PE (2M pairs) | 85,844 → 86,266 (+0.5%) | ~320 per mate | 50.2 → 71.3 s (+42%) |
+| rna_se SE (2M reads) | 92,898 → 93,528 (+0.7%) | ~670 | 14.6 → 18.7 s (+28%) |
+
+Doing the search at every position as intended makes the costliest function in fastp more
+expensive still. The fix should come with a faster search: for example, run the gap search only at
+positions where the exact-match mismatch count came within the gap budget, or use a bit-parallel
+(Myers) or banded approach. On a GPU this O(read × adapter) search would also be the most
+compute-dense part of fastp's per-read work.
 
 ## Running it
 
