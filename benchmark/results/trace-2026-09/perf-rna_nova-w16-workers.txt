@@ -1,0 +1,20 @@
+# perf record -F 199 -g, fastp -w 16 --detect_adapter_for_pe, rna_nova (SRR10007843) full run,
+# n2d-highmem-48. Samples restricted to worker threads (--comms fp-work-*). Self time, top entries.
+# Unresolved 0x... addresses are inside libdeflate (no symbols); see the inclusive view.
+    32.54%  Matcher::matchWithOneInsertion(char const*, char const*, int, int)
+    10.84%  Stats::statRead(Read*)
+     6.34%  0x0000000000004d5e   (libdeflate)
+     5.55%  fastp_simd::N_AVX2::CountMismatchesBoundedImpl(char const*, char const*, int, int)
+     4.68%  fastp_simd::countMismatchesBounded(char const*, char const*, int, int)
+     4.27%  Duplicate::checkPair(Read*, Read*)
+     3.67%  AdapterTrimmer::trimBySequence(Read*, FilterResult*, std::string&, bool, int)
+     2.75%  OverlapAnalysis::analyze(std::string*, std::string*, int, int, double, bool)
+     1.47%  Read::length()
+     1.43%  ReadPool::input(int, Read*)
+     0.97%  __memmove_avx_unaligned_erms
+# Inclusive (children) view, worker threads:
+    35.51%  trimBySequence (inlined)          <- adapter search by sequence, incl. matchWithOneInsertion
+    20.36%  inputPwrite (inlined)             <- libdeflate_gzip_compress 19.89%
+    10.85%  statRead (inlined)
+     4.80%  checkPair (inlined)               <- duplication
+     2.78%  OverlapAnalysis::analyze (inlined)

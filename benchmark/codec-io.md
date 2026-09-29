@@ -74,8 +74,60 @@ Reading the results:
 
 ## Results
 
-_Pending: n2d-highmem-48 runs on the full-size datasets from [full-size.md](full-size.md)
-(`rna_nova`, `wgbs`, `atac_hiseq` PE and `rna_se` SE), at `-w 16` and `-w 48`._
+n2d-highmem-48 (AMD EPYC Milan, 48 vCPUs = 24 cores × 2 SMT threads, 384 GB), 2 local
+NVMe SSDs in RAID 0, inputs in the page cache. The binary is this stack plus #723's
+backpressure fix (upstream 1.3.7 deadlocks at `-w 48`, #721). Complete public runs:
+`rna_nova` (SRR10007843, NovaSeq PE 150, 31M pairs), `wgbs` (ERR10308506, NextSeq PE,
+28M pairs), `atac_hiseq` (SRR891268, HiSeq PE 50, 193M pairs) and `rna_se` (ERR10669429,
+HiSeq SE 75, 43M reads). Medians of 2 reps. Raw data and the full `decompose.py` report are in
+[`results/codec-io-2026-09/`](results/codec-io-2026-09/).
+
+| dataset | -w | wall gz→gz | wall, no codecs (`plain_none`) | wall, plain input (`plain_gz`) | wall, BGZF input | CPU gz→gz | CPU compress share | CPU decompress share | CPU per-read floor share |
+|---|---|---|---|---|---|---|---|---|---|
+| atac_hiseq | 16 | 200 s | 185 s | 168 s | 195 s | 2598 | 19% | 3% | 76% |
+| atac_hiseq | 48 | 270 s | 236 s | 234 s | 270 s | 3473 | 19% | 4% | 75% |
+| rna_nova | 16 | 62 s | 46 s | 58 s | 68 s | 862 | 18% | 4% | 76% |
+| rna_nova | 48 | 59 s | 49 s | 50 s | 62 s | 1240 | 22% | 1% | 76% |
+| rna_se | 16 | 43 s | 35 s | 35 s | 45 s | 369 | 18% | 5% | 76% |
+| rna_se | 48 | 54 s | 46 s | 46 s | 57 s | 457 | 17% | 3% | 80% |
+| wgbs | 16 | 71 s | 58 s | 61 s | 70 s | 598 | 25% | 5% | 70% |
+| wgbs | 48 | 78 s | 69 s | 69 s | 83 s | 763 | 25% | -3% | 74% |
+
+Output digests are identical across every variant and thread count for each dataset
+(72 cells, one digest per dataset). I/O mode changes timing only.
+
+What it shows:
+
+1. **Per-read work, not codecs, is ~75% of CPU** (`plain_none` ÷ `gz_gz`) on every dataset.
+   Output compression is 17–25%. Input decompression is 1–5%.
+2. **Removing both codecs saves only 13–26% of wall time**, so no codec change alone (GPU or
+   CPU) can speed fastp up more than that.
+3. **`-w 48` is slower than `-w 16`** on 3 of 4 datasets (atac 200 → 270 s) and costs 25–45%
+   more CPU. 48 vCPUs are 24 physical cores. At `-w 48` the serial reader threads share
+   cores with workers, and the per-read cost of every stage rises (see [trace.md](trace.md)).
+   Idle workers also poll their queues on 1 ms timed waits.
+4. **Plain input helps only when the reader is the bottleneck** (atac −32 s, rna_nova at
+   `-w 48` −9 s). That is the reader's single-threaded inflate coming off the critical path.
+5. **BGZF input doesn't help and costs CPU** (+0–15% CPU, wall equal or worse). The parallel
+   BGZF reader removes inflate from the reader thread, but parsing stays there and is the larger part
+   ([trace.md](trace.md)). The one-off conversion to BGZF (`prep.tsv`) costs 12 CPU-s
+   (inflate) + 165 CPU-s (bgzip `-l 4`) per `rna_nova` mate, about 5.7 µs of CPU per read. That's
+   more than fastp spends decompressing and parsing the read.
+
+Standalone codecs (`codec.tsv`, `codec_parallel_uncapped.tsv`), per 10.4 GB `rna_nova` mate:
+
+| codec | threads | MB/s (uncompressed) | CPU-s | ratio |
+|---|---|---|---|---|
+| ISA-L inflate (fastp's reader) | 1 | 808 | 12 | – |
+| rapidgzip, ordinary gzip | 16 / 48 | 3,433 / 5,831 | 46 / 69 | – |
+| bgzip inflate, BGZF | 16 | 8,998 | 16 | – |
+| libdeflate `-1` / `-4` / `-6` (fastp's writer, `-z`) | 1 | 257 / 125 / 64 | – | 4.68 / 4.93 / 5.15 |
+| ISA-L `-1` | 1 | 460 | – | 4.51 |
+
+Parallel decompressors in `codec.tsv` were capped at ~2.5 GB/s by a `wc -c` pipe. That's fixed in
+`codec_baselines.sh`, and the uncapped reruns are in `codec_parallel_uncapped.tsv`. rapidgzip
+spends ~3.7× ISA-L's CPU per byte (index-free speculative decoding). BGZF decompression
+is about as efficient as ISA-L, but only once the input is BGZF.
 
 ## Running it
 
