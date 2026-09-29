@@ -1,0 +1,11 @@
+step	wall	user	sys	maxrss_kb	out_bytes
+rna_nova.R1.gunzip(igzip,1t)	12.39	8.64	3.74	3536	10437940003
+rna_nova.R1.bgzip(-@48,l4)	5.73	162.41	4.10	26704	2119865498
+wgbs.R1.gunzip(igzip,1t)	7.42	5.19	2.22	3544	6955629482
+wgbs.R1.bgzip(-@48,l4)	3.55	93.61	2.60	25548	1301382696
+atac_hiseq.R1.gunzip(igzip,1t)	45.19	32.75	12.43	3580	32584700736
+atac_hiseq.R1.bgzip(-@48,l4)	20.85	570.85	14.68	30628	8816711069
+rna_se.R1.gunzip(igzip,1t)	10.53	7.41	3.12	3548	9285933448
+rna_se.R1.bgzip(-@48,l4)	5.11	137.01	3.67	28976	1939708856
+rna_nova.R2.gunzip(igzip,1t)	12.23	8.77	3.46	3544	10437940003
+rna_nova.R2.bgzip(-@48,l4)	5.99	165.30	4.05	30500	2165002650
