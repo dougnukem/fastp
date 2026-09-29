@@ -27,7 +27,12 @@ run() {
   local ds=$1 tool=$2 op=$3 t=$4 lv=$5 in=$6 ub=$7; shift 8
   local tf; tf=$(mktemp)
   local ob
-  ob=$( { /usr/bin/time -f "%e %U %S %M" -o "$tf" "$@" < "$in" | wc -c; } 2>/dev/null )
+  if [ "${op#decompress}" != "$op" ]; then
+    # decompressed size is known; piping GB/s through wc would cap parallel tools at ~2.5 GB/s
+    /usr/bin/time -f "%e %U %S %M" -o "$tf" "$@" < "$in" > /dev/null 2>/dev/null; ob=$ub
+  else
+    ob=$( { /usr/bin/time -f "%e %U %S %M" -o "$tf" "$@" < "$in" | wc -c; } 2>/dev/null )
+  fi
   read -r wall user sys rss < "$tf"; rm -f "$tf"
   local inb; inb=$(stat -c %s "$in")
   python3 - "$ds" "$tool" "$op" "$t" "$lv" "$inb" "$ob" "$wall" "$user" "$sys" "$rss" "$ub" >> "$OUT" <<'EOF'

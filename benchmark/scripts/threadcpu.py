@@ -12,7 +12,7 @@ close to the run's processing time (busy ~100%) while the others have slack.
 Used by bench_full.py when FASTP_BENCH_THREADS_JSON is set; also runnable alone:
     python3 threadcpu.py <pid> <out.json> [interval_s]
 """
-import json, os, sys, threading, time
+import json, os, re, sys, threading, time
 
 TICK = os.sysconf('SC_CLK_TCK')
 
@@ -82,7 +82,8 @@ class Sampler:
                             'max_util': round(min(d['max_util'], 1.5), 3)})
         roles = {}
         for t in threads:
-            role = t['comm'].rsplit('-', 1)[0] if t['comm'].startswith('fp-') else t['comm']
+            # fp-work-3 -> fp-work; fp-read-L, fp-write, fp-bgzf, fp-bgzf-io stay as they are
+            role = re.sub(r'-\d+$', '', t['comm'])
             r = roles.setdefault(role, {'threads': 0, 'cpu_s': 0.0, 'max_busy': 0.0})
             r['threads'] += 1
             r['cpu_s'] = round(r['cpu_s'] + t['cpu_s'], 2)
