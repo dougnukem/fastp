@@ -41,17 +41,34 @@ def role(thread):
     return name
 
 
+# The pipeline starts at the first pack a reader produces. Before that, fastp's main thread
+# samples reads for adapter/length detection, and for BGZF input the evaluator starts its own
+# BGZF pool. Spans that end before the pipeline starts are reported as "pre-pipeline" and left
+# out of the window, busy shares and per-read costs.
+starts = [e[0] for th, evs in threads.items() if role(th).startswith('fp-read') for e in evs if e[2] == 'read_pack']
+t_start = min(starts) if starts else min(e[0] for evs in threads.values() for e in evs)
+pre = defaultdict(float)
+for th in list(threads):
+    keep = []
+    for e in threads[th]:
+        if e[1] < t_start or role(th) == 'fastp':
+            pre[e[2]] += (e[1] - e[0]) / 1e9
+        else:
+            keep.append(e)
+    if keep:
+        threads[th] = keep
+    else:
+        del threads[th]
+
+
 # exclusive time: a span's duration minus the durations of spans nested directly inside it
 excl = defaultdict(lambda: defaultdict(float))       # role -> kind -> seconds
 count = defaultdict(lambda: defaultdict(int))         # role -> kind -> spans
 sums_a = defaultdict(lambda: defaultdict(int))        # role -> kind -> sum(a)
 sums_b = defaultdict(lambda: defaultdict(int))
 nthreads = defaultdict(int)
-# The main thread ("fastp") reads a sample for adapter/length detection before the pipeline
-# starts; keep it out of the processing window and per-read costs, and report it separately.
-pipe = {th: evs for th, evs in threads.items() if role(th) != 'fastp'} or threads
-t_min = min(e[0] for evs in pipe.values() for e in evs)
-t_max = max(e[1] for evs in pipe.values() for e in evs)
+t_min = t_start
+t_max = max(e[1] for evs in threads.values() for e in evs)
 flat = []  # (thread, role, t0, t1, kind, exclusive_ns) for the timeline
 for th, evs in threads.items():
     ro = role(th)
@@ -74,15 +91,12 @@ for th, evs in threads.items():
         flat.append((ro, t0, t1, kind, own[i]))
 
 window = (t_max - t_min) / 1e9
-main = excl.pop('fastp', {})
-nthreads.pop('fastp', None)
-flat = [f for f in flat if f[0] != 'fastp']
 out = []
 p = out.append
 p(f'# fastp trace: {path}\n')
-p(f'Processing window (first to last pipeline span): **{window:.2f} s**. Before it, the main thread '
-  f'spent {sum(main.values()):.2f} s in traced spans (sample reads for detection: '
-  + (', '.join(f'{k} {v:.2f} s' for k, v in main.items()) or 'none') + ').\n')
+p(f'Processing window (first reader pack to last span): **{window:.2f} s**. Before it (detection '
+  f'sampling on the main thread, and the evaluator\'s BGZF pool for BGZF input): '
+  + (', '.join(f'{k} {v:.2f} s' for k, v in sorted(pre.items())) or 'nothing traced') + '.\n')
 
 # ---- 1. roles
 kinds = sorted({k for ro in excl for k in excl[ro]})

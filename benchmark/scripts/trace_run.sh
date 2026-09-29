@@ -4,6 +4,7 @@
 # Also times the same cell with a normal build, if given, to measure trace overhead.
 #
 # Usage: trace_run.sh <fastp-trace> <data_dir> <work_dir> <out_dir> "<name>:<PE|SE> ..." [threads] [inputs] [fastp-normal]
+#   threads comma list; "default" runs without -w. Default: 16,48
 #   inputs  comma list of gz (sequencer .gz from data_dir), bgzf, plain (made by io_variants.sh
 #           in work_dir). Default: gz
 # Output is always .gz (the normal configuration); see io_variants.sh for other output modes.
@@ -24,8 +25,9 @@ for spec in $SPECS; do
     esac
     [ -s "$i1" ] || { echo "missing $i1 (run io_variants.sh first for bgzf/plain)" >&2; continue; }
     for t in ${THREADS//,/ }; do
-      if [ "$layout" = PE ]; then args="-w $t --detect_adapter_for_pe -i $i1 -I $i2 -o $RUN/o1.fq.gz -O $RUN/o2.fq.gz"
-      else args="-w $t -i $i1 -o $RUN/o1.fq.gz"; fi
+      wa=""; [ "$t" != default ] && wa="-w $t"
+      if [ "$layout" = PE ]; then args="$wa --detect_adapter_for_pe -i $i1 -I $i2 -o $RUN/o1.fq.gz -O $RUN/o2.fq.gz"
+      else args="$wa -i $i1 -o $RUN/o1.fq.gz"; fi
       cell="$name.$in.w$t"
       cat "$i1" $([ "$layout" = PE ] && echo "$i2") > /dev/null
       s=$(date +%s.%N)

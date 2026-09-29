@@ -39,4 +39,6 @@ fastp
 
 # Test Output
 *.json
-*.html
+*.htmlobj-trace/
+fastp-trace
+fastp.trace.tsv

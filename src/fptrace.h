@@ -23,6 +23,7 @@
 #endif
 
 #ifdef FASTP_TRACE
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -67,6 +68,10 @@ inline void dump();
 struct Registry {
     std::mutex mtx;
     std::vector<Buffer*> buffers;
+    // Set when the exit dump starts. On a normal exit every pipeline thread has been joined;
+    // on error_exit() from a worker, others may still be running, so they stop recording
+    // (a span already mid-push_back can still race; the dump then may lose that thread's tail).
+    std::atomic<bool> dumping{false};
     static Registry& get() {
         static Registry* r = [] { now(); std::atexit(dump); return new Registry(); }();
         return *r;
@@ -89,6 +94,7 @@ inline Buffer* local() {
 
 inline void dump() {
     Registry& r = Registry::get();
+    r.dumping.store(true, std::memory_order_seq_cst);
     const char* path = std::getenv("FASTP_TRACE_FILE");
     FILE* f = std::fopen(path ? path : "fastp.trace.tsv", "w");
     if (!f) return;
@@ -98,23 +104,27 @@ inline void dump() {
         Buffer* b = r.buffers[i];
         // make names unique per thread instance: fp-work-3 stays, repeated names get #i
         std::string name = b->name + "#" + std::to_string(i);
-        for (const Event& e : b->events)
+        size_t n = b->events.size();  // snapshot: ignore anything appended during the dump
+        for (size_t j = 0; j < n; j++) {
+            const Event& e = b->events[j];
             std::fprintf(f, "%s\t%s\t%llu\t%llu\t%llu\t%llu\n", name.c_str(), KIND_NAMES[e.kind],
                          (unsigned long long)e.t0, (unsigned long long)e.t1,
                          (unsigned long long)e.a, (unsigned long long)e.b);
+        }
     }
     std::fclose(f);
 }
 
 // For spans that cross loop iterations: t0 = fptrace::now(); ... fptrace::record(KIND, t0, n);
 inline void record(Kind k, uint64_t t0, uint64_t a = 0, uint64_t b = 0) {
+    if (Registry::get().dumping.load(std::memory_order_relaxed)) return;
     local()->events.push_back(Event{t0, now(), a, b, (uint8_t)k});
 }
 
 struct Span {
     Kind kind; uint64_t t0; uint64_t a = 0, b = 0;
     explicit Span(Kind k) : kind(k), t0(now()) {}
-    ~Span() { local()->events.push_back(Event{t0, now(), a, b, (uint8_t)kind}); }
+    ~Span() { record(kind, t0, a, b); }
     Span(const Span&) = delete;
     Span& operator=(const Span&) = delete;
 };
