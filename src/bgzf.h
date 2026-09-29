@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <vector>
 #include <isa-l/igzip_lib.h>
+#include "fptrace.h"
 
 static const int BGZF_HEADER_SIZE = 18;
 static const int BGZF_MAX_BLOCK_SIZE = 65536;
@@ -123,6 +124,7 @@ public:
 
 private:
     void readerLoop() {
+        fptrace::setThreadName("fp-bgzf-io");
         unsigned char header[BGZF_HEADER_SIZE];
 
         while (!mStop) {
@@ -165,6 +167,7 @@ private:
     }
 
     void decompWorker() {
+        fptrace::setThreadName("fp-bgzf");
         while (!mStop) {
             Slot* target = nullptr;
             {
@@ -176,6 +179,7 @@ private:
                 if (!target) continue;
             }
 
+            FPTRACE_NAMED(span, BGZF_BLOCK);
             struct inflate_state ist;
             isal_inflate_init(&ist);
             ist.crc_flag = ISAL_GZIP;
@@ -185,6 +189,7 @@ private:
             ist.avail_out = BGZF_MAX_BLOCK_SIZE;
             int ret = isal_inflate_stateless(&ist);
             target->decompLen = (ret == ISAL_DECOMP_OK) ? (int)ist.total_out : 0;
+            span.a = target->decompLen;
 
             // Publish READY under mConsumeMtx so the consumer parked in read() on
             // mConsumeCv cannot miss the wakeup for this slot.

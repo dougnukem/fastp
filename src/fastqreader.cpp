@@ -25,6 +25,7 @@ SOFTWARE.
 #include "fastqreader.h"
 #include "util.h"
 #include "bgzf.h"
+#include "fptrace.h"
 #include <string.h>
 #include <cassert>
 
@@ -151,9 +152,13 @@ void FastqReader::readToBufIgzip(){
 void FastqReader::readToBuf() {
 	mBufDataLen = 0;
 	if(mBgzfReader) {
+		FPTRACE_NAMED(span, BGZF_FETCH);
 		mBufDataLen = mBgzfReader->read(mFastqBuf, FQ_BUF_SIZE);
+		span.a = mBufDataLen;
 	} else if(mZipped) {
+		FPTRACE_NAMED(span, DECOMPRESS);
 		readToBufIgzip();
+		span.a = mBufDataLen;
 	} else {
 		if(!eof())
 			mBufDataLen = fread(mFastqBuf, 1, FQ_BUF_SIZE, mFile);

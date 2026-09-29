@@ -1,5 +1,6 @@
 #include "writerthread.h"
 #include "util.h"
+#include "fptrace.h"
 #include <memory.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -123,8 +124,11 @@ void WriterThread::inputPwrite(int tid, string* data) {
         mCompBufs[tid] = new char[bound];
         mCompBufSizes[tid] = bound;
     }
+    FPTRACE_NAMED(compressSpan, COMPRESS);
+    compressSpan.a = data->size();
     size_t outsize = libdeflate_gzip_compress(mCompressors[tid], data->data(), data->size(),
                                                mCompBufs[tid], bound);
+    compressSpan.b = outsize;
     if (outsize == 0)
         error_exit("libdeflate gzip compression failed");
     delete data;
@@ -137,6 +141,7 @@ void WriterThread::inputPwrite(int tid, string* data) {
     // Sleep yields CPU to prevent livelock under contention.
     size_t offset = 0;
     if (seq > 0) {
+        FPTRACE_SPAN(OFFSET_WAIT);
         size_t prevSlot = (seq - 1) & (OFFSET_RING_SIZE - 1);
         while (mOffsetRing[prevSlot].published_seq.load(std::memory_order_acquire) != seq - 1) {
             std::this_thread::sleep_for(std::chrono::microseconds(1));
@@ -151,6 +156,8 @@ void WriterThread::inputPwrite(int tid, string* data) {
 
     // pwrite (concurrent with other workers on non-overlapping regions)
     if (wsize > 0) {
+        FPTRACE_NAMED(writeSpan, WRITE);
+        writeSpan.a = wsize;
         size_t written = 0;
         while (written < wsize) {
             ssize_t ret = pwrite(mFd, writeData + written, wsize - written, offset + written);

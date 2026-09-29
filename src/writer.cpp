@@ -23,6 +23,7 @@ SOFTWARE.
 */
 
 #include "writer.h"
+#include "fptrace.h"
 #include "util.h"
 #include <string.h>
 
@@ -114,10 +115,18 @@ bool Writer::writeInternal(const char* strdata, size_t size) {
 	if(mZipped){
 		size_t bound = libdeflate_gzip_compress_bound(mCompressor, size);
 		void* out = malloc(bound);
-		size_t outsize = libdeflate_gzip_compress(mCompressor, strdata, size, out, bound);
+		size_t outsize;
+		{
+			FPTRACE_NAMED(span, COMPRESS);
+			span.a = size;
+			outsize = libdeflate_gzip_compress(mCompressor, strdata, size, out, bound);
+			span.b = outsize;
+		}
 		if(outsize == 0)
 			status = false;
 		else {
+			FPTRACE_NAMED(span, WRITE);
+			span.a = outsize;
 			size_t ret = fwrite(out, 1, outsize, mFP );
 			status = ret>0;
 			//mOutStream->write((char*)out, outsize);
@@ -126,6 +135,8 @@ bool Writer::writeInternal(const char* strdata, size_t size) {
 		free(out);
 	}
 	else{
+		FPTRACE_NAMED(span, WRITE);
+		span.a = size;
 		size_t ret = fwrite(strdata, 1, size, mFP );
 		status = ret>0;
 	}

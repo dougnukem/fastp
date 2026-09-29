@@ -27,6 +27,11 @@ CXX ?= g++
 CXXFLAGS := -std=c++11 -pthread -g -O3 -MD -MP -I. -I${DIR_INC} $(foreach includedir,$(INCLUDE_DIRS),-I$(includedir)) $(HWY_CFLAGS) $(ISAL_CFLAGS) $(DEFLATE_CFLAGS) ${CXXFLAGS}
 LIBS := -lisal -ldeflate -lhwy -lpthread
 
+# make TRACE=1: per-pack stage timing (src/fptrace.h), written to $FASTP_TRACE_FILE at exit
+ifeq ($(TRACE),1)
+CXXFLAGS += -DFASTP_TRACE
+endif
+
 PKG_LDFLAGS := $(HWY_LIBS) $(ISAL_LIBS) $(DEFLATE_LIBS)
 
 UNAME_S := $(shell uname -s)
