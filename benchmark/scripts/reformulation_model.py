@@ -164,7 +164,8 @@ for speedup, sp_label in (scenarios if gpu and 'kernel' in gpu else []):
     # nvlzcat's gzip; GDeflate is not gzip-compatible. Take the fastest config whose ratio is
     # within 90% of fastp's libdeflate -z 4 ratio, else the best ratio available.
     cands = [(k, v) for k, v in (gpu.get('deflate') or {}).items()
-             if isinstance(v, dict) and v.get('GBps_in') and v.get('ratio') and not k.startswith('GDeflate')]
+             if isinstance(v, dict) and v.get('GBps_in') and v.get('ratio') and not v.get('python_api')
+             and 'GDeflate' not in k]
     good = [kv for kv in cands if kv[1]['ratio'] >= 0.9 * ratio]
     pick = max(good, key=lambda kv: kv[1]['GBps_in']) if good else (max(cands, key=lambda kv: kv[1]['ratio']) if cands else None)
     comp, comp_ratio, comp_name = None, ratio, '-'
