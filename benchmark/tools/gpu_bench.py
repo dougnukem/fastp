@@ -217,17 +217,24 @@ if opt('--gz'):
             g1['nvlzcat']['size_mismatch_vs_plain'] = usize
     else:
         g1['nvlzcat'] = 'not on PATH (nvCOMP >= 5.2 tarball ships it)'
-    if nvcomp and os.path.getsize(gz) <= MAX:
+    if nvcomp and opt('--plain'):
+        # The Python API exposes no choice of gzip decompression algorithm (the LOOKAHEAD one is
+        # in the C API and nvlzcat). Its default decodes a single-member stream as one chunk,
+        # which on a whole multi-GB file ran for >15 min, so measure it on a 100 MB member.
         try:
+            import gzip as _gz
+            sample = np.fromfile(opt('--plain'), np.uint8, count=100_000_000).tobytes()
+            member = np.frombuffer(_gz.compress(sample, compresslevel=4), np.uint8)
             codec = nvcomp.Codec(algorithm='Gzip', bitstream_kind=nvcomp.BitstreamKind.RAW)
-            arr = nvcomp.as_array(np.fromfile(gz, np.uint8)).cuda()
+            arr = nvcomp.as_array(member).cuda()
             out = codec.decode(arr)
             n = nbytes(out)
             t = timed(lambda: codec.decode(arr), reps=3)
-            g1['python_gzip_codec'] = {'uncompressed_bytes': n, 'decode_s': t, 'GBps_uncompressed': n / t / 1e9,
-                                       'note': 'whole file as one buffer, device-resident'}
+            g1['python_gzip_codec_100MB_member'] = {
+                'uncompressed_bytes': n, 'size_ok': n == len(sample), 'decode_s': t, 'GBps_uncompressed': n / t / 1e9,
+                'note': 'default (non-lookahead) single-member decode, device-resident'}
         except Exception as e:
-            g1['python_gzip_codec'] = {'error': repr(e)}
+            g1['python_gzip_codec_100MB_member'] = {'error': repr(e)}
     arr = out = None
     free_gpu()
     res['gzip1'] = g1
