@@ -73,11 +73,42 @@ for this reason.
 
 The model overpredicts two datasets (RNA HiSeq SE +22–39%, ATAC HiSeq
 +19–28%): their subsets processed 25–40% slower per read than the full runs.
-The subsets are the first reads of each run, recompressed at gzip level 1;
-the likely cause is that their per-read input cost differs from the original
-files, but that isn't confirmed. That offset is
+The cause is unexplained: recompressing the subsets at gzip level 1, the first
+hypothesis, isn't it (next section). That offset is
 the same for both builds, which is why deltas project well even when absolute
 times don't.
+
+### A simpler method: fit a line through two subset sizes
+
+A separate scaling experiment (3 complete public runs; subsets of 0.25M, 1M,
+4M and 16M pairs; 4 and 16 cores; 4 reps each; one full run per cell) tested
+predicting full-run time from `a + b·N` fitted through two subset sizes, using
+only wall and CPU time, with no stage timestamps. Median absolute error over
+3 datasets × 2 core counts, against the measured full run
+(`results/subset-scaling-2026-09.tsv`):
+
+| subset | metric | one size × N/n (16M) | line through 0.25M + 1M | 1M + 4M | 4M + 16M |
+|---|---|---|---|---|---|
+| first N reads of the original file | wall | 11.0% | 3.9% | 1.9% | 2.0% |
+| | CPU | 2.9% | 2.2% | 1.0% | 1.1% |
+| first N reads, recompressed (igzip -1) | wall | 19.4% | 5.7% | 3.7% | 7.5% |
+| | CPU | 3.4% | 3.3% | 1.1% | 2.3% |
+| every k-th read across the file, recompressed | wall | 14.9% | 34.6% | 8.2% | 4.6% |
+| | CPU | 3.8% | 5.3% | 3.6% | 2.3% |
+
+- Scaling one subset by N/n overpredicts wall time (up to +47%, WGBS at 16
+  cores) because fixed costs are multiplied by N/n. The two-point fit removes that.
+- CPU time is predicted better than wall time by every method. First-N subsets
+  of 1M and 4M pairs give full-run CPU within 1% (median, worst 7%) and wall
+  within 2% (median, worst about 10%).
+- Recompressing the subsets moves the median CPU error by about 1 point, so it
+  does not explain the overprediction in the previous section.
+- Random sampling with a 0.25M subset is unreliable for wall time (worst −179%).
+
+So, for a benchmark on subsets: run two sizes (1M and 4M pairs), take the first
+N reads of the original file, and report the intercept (fixed cost) and slope
+(CPU-seconds per pair) separately. Three datasets and one full run per cell is
+a small sample; treat the error figures as indicative.
 
 ## A code-path model of throughput
 
@@ -116,12 +147,13 @@ of the timed runs):
   two input readers saturated. Short reads are reader-bound: parsing cost is per
   read, while trimming cost grows with length.
 
-Where the model fails: at `-w 48` it predicts 1.24M/s for RNA NovaSeq; 0.42M/s
-was measured. The VM has 24 physical cores, so 48 workers plus readers and
-writers (51 threads) share cores, and CPU per pair rises from 30 to 43 µs.
-Even 24 cores would allow 0.79M/s, so there's a further loss this model
-doesn't explain. Keep `-w` at or below physical cores minus the reader and
-writer threads until that's understood.
+Where the model fails: at `-w 48` on a VM with 24 physical cores it predicted
+1.24M/s for RNA NovaSeq and 0.42M/s was measured. Rerunning on 48 physical
+cores (below) closes part of the gap (0.72M/s on Intel) but not all of it, and
+no case gains more than 6% beyond 24 workers. The counters show it is not memory
+traffic (memory-bound is 5–6% of slots at 16 and 48 workers). Keep `-w` at or
+below the number of physical cores, and expect no gain past about 24 until the
+remaining loss is understood.
 
 To rerun after a code change: profile the new build with `profile_run.sh`, run
 `profile_breakdown.py`, and compare per-path costs. A path that got cheaper
@@ -163,9 +195,73 @@ Profiled: RNA NovaSeq and ATAC HiSeq, master and stack at `-w 16`, stack at
 - Adapter detection is under 1% of CPU on full files.
 - Going from `-w 16` to `-w 48` adds 40% CPU with no speedup; queue/sync time
   rises from about 5% to 10–17% (workers waiting).
-- Not captured: hardware counters (these VMs expose no PMU, so no IPC or cache
-  data) and off-CPU stacks (the BPF capture failed; `profile_run.sh` now keeps
-  its stderr in `offcpu.err`).
+- Off-CPU stacks were not captured (the BPF capture failed; `profile_run.sh`
+  now keeps its stderr in `offcpu.err`).
+
+### 48 physical cores
+
+`c4-standard-96` (Intel Emerald Rapids) and `n2d-highmem-96` (AMD Milan), each
+with one thread per core, so 48 vCPUs are 48 physical cores (2 NUMA nodes).
+Wall seconds, median of 2 alternating reps, cold page cache
+(`results/cores-2026-09.tsv`); the full runs are RNA NovaSeq (31M pairs, 150bp)
+and ATAC HiSeq (193M pairs, 50bp):
+
+| machine | build | RNA `-w 16` / `24` / `48` | ATAC `-w 16` / `24` / `48` |
+|---|---|---|---|
+| Intel C4 | master | 65 / 122 / hangs | 196 / 336 / hangs |
+| | stack | 54 / 43 / 44 | 147 / 151 / 176 |
+| | stack + gap-search fix | 60 / 48 / 45 | 140 / 150 / 180 |
+| AMD n2d | master | 74 / 118 / hangs | 292 / 402 / hangs |
+| | stack | 58 / 60 / 66 | 299 / 314 / 373 |
+| | stack + gap-search fix | 62 / 59 / 67 | 291 / 307 / 360 |
+
+- Upstream master is 1.4–1.9× slower at `-w 24` than at `-w 16` on both machines
+  and both datasets, and hangs at 48. The slowdown starts well below 32 threads.
+- With the stack, no case is more than 6% faster at `-w 48` than at `-w 24`, and
+  ATAC and AMD RNA are slower at 48 than at 16. CPU seconds at `-w 48` are
+  11–39% higher than at 16.
+- Absolute times are not comparable across machines: AMD ATAC at `-w 16` took
+  299s here and 213s on the earlier 24-core VM. The data disks here were
+  restored from snapshots and the machine has two NUMA nodes; neither was
+  investigated. Compare builds within one machine.
+
+### Hardware counters (Intel C4, PMU `standard`)
+
+Full RNA NovaSeq (31M pairs), % of pipeline slots (`scripts/profile_pmu.sh`,
+`scripts/pmu_breakdown.py`, `results/pmu-2026-09/`):
+
+| run | retiring | bad speculation (branch mispredict) | front-end (latency / bandwidth) | back-end (memory / core) | IPC | branch-miss rate |
+|---|---|---|---|---|---|---|
+| master `-w 16` | 40.5 | 20.8 (20.3) | 26.2 (8.7 / 17.5) | 12.5 (5.5 / 7.0) | 2.67 | 2.59% |
+| stack `-w 16` | 39.9 | 20.5 (20.0) | 27.5 (11.3 / 16.2) | 12.1 (5.2 / 6.9) | 2.65 | 2.83% |
+| stack + gap fix `-w 16` | 31.1 | 31.0 (30.7) | 25.9 (11.7 / 14.2) | 12.0 (4.6 / 7.4) | 1.99 | 5.24% |
+| stack `-w 48` | 39.1 | 20.4 (19.9) | 26.8 (11.1 / 15.7) | 13.7 (5.9 / 7.8) | 2.58 | 2.90% |
+
+- The workload is branch- and front-end-bound, not memory-bound: back-end is
+  12% of slots and memory-bound 5%. Cache, NUMA and bandwidth are not what
+  limits it; branchy per-read matching is.
+- The two hottest functions are 53% of cycles in the stack.
+  `Matcher::matchWithOneInsertion` takes 28% of cycles and 47% of instructions
+  at IPC 4.4.
+  `CountMismatchesBoundedImpl` (SIMD) takes 25% of cycles and **40% of all branch
+  mispredictions** (IPC 1.5, 15.5 mispredictions per 1k instructions).
+  `countMismatchesBounded` and `OverlapAnalysis::analyze` add about 12% each at
+  about 29 per 1k.
+- Master and stack have the same profile (IPC 2.67 vs 2.65): the stack did not
+  change the per-read code.
+- The gap-search fix with early exit executes **17% fewer instructions** (7.51T
+  vs 9.06T) but takes **10% more cycles** (3.77T vs 3.42T): the branch-miss rate
+  nearly doubles (2.83% to 5.24%) and `matchWithOneInsertion` drops from IPC 4.4 to 2.0. An
+  instruction-count gate would have passed this change while CPU time got worse,
+  so gate on CPU seconds.
+- `-w 48` vs `-w 16` (stack): cycles rise 3% (3.53T vs 3.42T) but CPU seconds
+  rise 32% (864 to 1141, from the timing runs). That is an effective clock of
+  about 4.0 GHz falling to 3.1 GHz (cycles ÷ CPU-seconds), so on this VM most of
+  the extra CPU time at 48 workers is lower clock speed under all-core load,
+  not extra work. This is an estimate: the counter and timing runs are separate,
+  and AMD has no counters to confirm it.
+- Level-3 cache events are unavailable at `standard`; they need `enhanced`,
+  which GCE offers only on 144- and 288-vCPU C4 machines.
 
 A next step, if the profiles point at stage balance: a trace build that
 timestamps each pack at read, claim, process and write, and records queue depth
