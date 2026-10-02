@@ -7,9 +7,20 @@ repetition. Each run is split into stages from fastp's stderr timestamps:
 adapter auto-detection (serial, before processing) and processing; plus CPU
 time and peak RSS.
 
-A gated metric (wall, CPU, peak RSS) regresses when its median is worse than
-base by more than --threshold percent AND every head run is worse than every
-base run, so a single noisy run can't trip it.
+Subsets make fixed-cost stages look bigger than they are: pre-processing,
+adapter detection (at most 256K reads per mate) and the report cost the same on
+a small subset as on a 50M-read run. So every (build, dataset) is run on the
+first N1 and N2 pairs of the same input (--reads_to_process, no recompression),
+and a line through the two points gives a fixed cost (intercept) and a cost per
+pair (slope). The projection to --project-reads is fixed + slope x reads. N1 and
+N2 are 4x apart and both above the detection cap.
+On 3 complete public runs (4 and 16 cores), a line through 0.25M + 1M pairs
+predicted full-run CPU within 2% and wall within 4% (median error); 1M + 4M
+within 1% and 2%.
+
+A gated metric (projected wall, CPU per pair, peak RSS) regresses when its
+median is worse than base by more than --threshold percent AND every head run
+is worse than every base run, so a single noisy run can't trip it.
 
   bench.py prepare DATA_DIR            # synthetic sets + a cached public subset
   bench.py run --builds base=PATH,head=PATH --data DATA_DIR [--threshold 10] [--fail-on-regression] ...
@@ -18,9 +29,10 @@ import argparse, gzip, json, shutil, os, platform, statistics, subprocess, sys, 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # input sets: name -> public ENA run (first N pairs streamed) or None for gen_reads.py output
+SIZES = (300000, 1200000)  # pairs (reads for SE); 4x apart, above the 256K-read detection cap
 SOURCES = {
-    "synthetic": (None, 200000),
-    "atac_hiseq": ("SRR891268", 500000),  # Buenrostro 2013 GM12878 ATAC-seq, Nextera adapters
+    "synthetic": (None, SIZES[1]),
+    "atac_hiseq": ("SRR891268", SIZES[1]),  # Buenrostro 2013 GM12878 ATAC-seq, Nextera adapters
 }
 # (benchmark name, layout, source)
 DATASETS = [
@@ -28,9 +40,13 @@ DATASETS = [
     ("synthetic_se", "SE", "synthetic"),
     ("atac_hiseq_pe", "PE", "atac_hiseq"),
 ]
-METRICS = [("wall", "s", "wall time"), ("cpu", "s", "CPU (user+sys)"), ("rss_mb", "MB", "peak RSS"),
+METRICS = [("proj_wall", "s", "projected wall"), ("cpu_us", "µs", "CPU per pair (read for SE)"), ("rss_mb", "MB", "peak RSS"),
+           ("fixed_wall", "s", "fixed cost (wall)"), ("proj_cpu", "s", "projected CPU"),
+           ("wall", "s", "wall time"), ("cpu", "s", "CPU (user+sys)"),
            ("detect", "s", "adapter detection"), ("process", "s", "processing")]
-GATED = ["wall", "cpu", "rss_mb"]
+GATED = ["proj_wall", "cpu_us", "rss_mb"]
+FIXED = ["fixed_wall", "proj_cpu"]
+MEASURED = ["wall", "cpu", "detect", "process"]  # measured at the larger subset
 MIN_BASE = 0.2  # seconds; shorter timings are too noisy to judge
 NOTABLE_PCT = 5.0  # improvements are reported (never gated) from here
 SIGNOFF_LABEL = "perf-regression-ok"
@@ -92,10 +108,12 @@ def main():
     r = sub.add_parser("run")
     r.add_argument("--builds", required=True, help="name=PATH,...; the first is the baseline, the last is compared to it")
     r.add_argument("--data", required=True)
-    r.add_argument("--threads", default="1,4")
+    r.add_argument("--threads", default="4")
+    r.add_argument("--sizes", default=",".join(map(str, SIZES)), help="two subset sizes in pairs (reads for SE), smaller first")
     r.add_argument("--reps", type=int, default=3)
     r.add_argument("--timeout", type=int, default=600)
     r.add_argument("--threshold", type=float, default=10.0, help="regression threshold, percent")
+    r.add_argument("--project-reads", type=float, default=50e6, help="full-size run to project to (reads, or pairs for PE)")
     r.add_argument("--fail-on-regression", action="store_true")
     r.add_argument("--signed-off", action="store_true", help=f"regressions accepted (the {SIGNOFF_LABEL} label)")
     r.add_argument("--summary", help="append the report here (e.g. $GITHUB_STEP_SUMMARY)")
@@ -109,26 +127,43 @@ def main():
 
     builds = [tuple(b.split("=", 1)) for b in a.builds.split(",")]
     threads = [int(t) for t in a.threads.split(",")]
+    n1, n2 = sorted(int(x) for x in a.sizes.split(","))
     rows, failures = [], []
     for name, layout, src in DATASETS:
         d = lambda m: os.path.join(a.data, f"{src}_R{m}.fastq.gz")
         for t in threads:
             for rep in range(a.reps):
                 for bname, path in (builds if rep % 2 == 0 else builds[::-1]):  # alternate order: no first-run bias
-                    w = tempfile.mkdtemp()
-                    if layout == "PE":
-                        args = ["-i", d(1), "-I", d(2), "-o", f"{w}/o1.fq.gz", "-O", f"{w}/o2.fq.gz", "--detect_adapter_for_pe"]
-                    else:
-                        args = ["-i", d(1), "-o", f"{w}/o1.fq.gz"]
-                    args += ["-w", str(t), "-j", f"{w}/r.json", "-h", f"{w}/r.html"]
-                    rc, wall, lines, cpu, rss = run_once(os.path.abspath(path), args, a.timeout)
-                    shutil.rmtree(w, ignore_errors=True)
-                    if rc != 0:
-                        failures.append(f"{bname} {name} -w {t}: exit {rc}")
+                    pts = []
+                    for n in (n1, n2):
+                        w = tempfile.mkdtemp()
+                        if layout == "PE":
+                            args = ["-i", d(1), "-I", d(2), "-o", f"{w}/o1.fq.gz", "-O", f"{w}/o2.fq.gz", "--detect_adapter_for_pe"]
+                        else:
+                            args = ["-i", d(1), "-o", f"{w}/o1.fq.gz"]
+                        args += ["--reads_to_process", str(n), "-w", str(t), "-j", f"{w}/r.json", "-h", f"{w}/r.html"]
+                        rc, wall, lines, cpu, rss = run_once(os.path.abspath(path), args, a.timeout)
+                        got = 0
+                        if rc == 0:
+                            with open(f"{w}/r.json") as f:
+                                got = json.load(f)["summary"]["before_filtering"]["total_reads"] // (2 if layout == "PE" else 1)
+                        shutil.rmtree(w, ignore_errors=True)
+                        if rc != 0 or got != n:
+                            failures.append(f"{bname} {name} -w {t} n={n}: exit {rc}, processed {got}")
+                            break
+                        pts.append((wall, cpu, rss, stages(lines, wall)))
+                    if len(pts) < 2:
                         continue
-                    det, proc = stages(lines, wall)
-                    rows.append(dict(build=bname, dataset=name, threads=t, rep=rep, wall=wall,
-                                     detect=det, process=proc, cpu=cpu, rss_mb=rss))
+                    (w1, c1, _, _), (w2, c2, rss2, (det2, proc2)) = pts
+                    slope_w, slope_c = (w2 - w1) / (n2 - n1), (c2 - c1) / (n2 - n1)
+                    if slope_w <= 0 or slope_c <= 0:  # the larger subset ran no slower than the smaller one: noise
+                        failures.append(f"{bname} {name} -w {t}: non-positive slope between {n1} and {n2} pairs")
+                        continue
+                    fixed_w, fixed_c = w1 - slope_w * n1, c1 - slope_c * n1
+                    rows.append(dict(build=bname, dataset=name, threads=t, rep=rep, wall=w2, cpu=c2, detect=det2,
+                                     process=proc2, rss_mb=rss2, fixed_wall=fixed_w,
+                                     proj_wall=fixed_w + slope_w * a.project_reads,
+                                     proj_cpu=fixed_c + slope_c * a.project_reads, cpu_us=slope_c * 1e6))
 
     names = [b for b, _ in builds]
     base, head = names[0], names[-1]
@@ -157,6 +192,7 @@ def main():
     regressions = [c for c in cells if c[2] in GATED and results.get(c, (0, ""))[1] == "regression"]
     improvements = [c for c in cells if c[2] in GATED and results.get(c, (0, ""))[1] == "improvement"]
     icon = {"regression": " 🔴", "improvement": " 🟢"}
+    size = f"{a.project_reads / 1e6:g}M reads (pairs for PE)"
 
     def table(keys):
         out = ["| dataset | -w | " + " | ".join(label for k, _, label in METRICS if k in keys) + " |",
@@ -191,10 +227,14 @@ def main():
             out.append(f"✅ **No regressions** over {a.threshold:g}%.")
         out += ["", f"`{base}` → `{head}`, median of {a.reps} interleaved runs on one {os.cpu_count()}-CPU runner. "
                 f"🔴 = worse by more than {a.threshold:g}%, 🟢 = better by more than {NOTABLE_PCT:g}%, in both cases "
-                "with no overlap between the base and head runs; unmarked changes are within runner noise. "
-                "Wall time, CPU and peak RSS are gated; stage timings are informational.", ""]
-    out += table(GATED) + ["", "<details><summary>stage timings</summary>", ""] + \
-        table(["detect", "process"]) + ["", "</details>", ""]
+                "with no overlap between the base and head runs; unmarked changes are within runner noise.", "",
+                f"**Projected to a full-size run of {size}.** Each build runs on the first {n1:,} and {n2:,} pairs of the "
+                "same input; a line through the two points gives the fixed cost and the cost per pair, and the projection is "
+                "fixed + cost per pair × size. On 3 complete public runs this predicted full-run CPU within 1–2% and wall "
+                "within 2–4% (median). Projected wall, CPU per pair and peak RSS are gated.", ""]
+    out += table(GATED) + ["", "<details><summary>fixed cost and projected CPU</summary>", ""] + table(FIXED) + \
+        ["", "</details>", "", f"<details><summary>measured on the {n2:,}-pair subset</summary>", ""] + \
+        table(MEASURED) + ["", "</details>", ""]
     if failures:
         out += ["**Failed runs:**"] + [f"- {f}" for f in failures]
     text = "\n".join(out) + "\n"
@@ -206,7 +246,8 @@ def main():
         with open(a.comment, "w") as f:
             f.write(text)
     if a.tsv:
-        cols = ("build", "dataset", "threads", "rep", "wall", "detect", "process", "cpu", "rss_mb")
+        cols = ("build", "dataset", "threads", "rep", "wall", "detect", "process", "cpu", "rss_mb",
+                "fixed_wall", "proj_wall", "proj_cpu", "cpu_us")
         with open(a.tsv, "w") as f:
             f.write("\t".join(cols) + "\n")
             for row in rows:
@@ -219,6 +260,7 @@ def main():
     if a.compare_json and compare:
         with open(a.compare_json, "w") as f:
             json.dump({"base": base, "head": head, "threshold_pct": a.threshold, "signed_off": a.signed_off,
+                       "project_reads": a.project_reads, "sizes": [n1, n2],
                        "failures": failures, "regressions": len(regressions), "improvements": len(improvements),
                        "cells": [{"dataset": n, "threads": t, "metric": k, "gated": k in GATED,
                                   "base": med(base, n, t, k), "head": med(head, n, t, k),

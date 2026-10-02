@@ -66,6 +66,12 @@ public:
 struct ReadPack {
     Read** data;
     int count;
+    // Global index of this pack's first read, so per-read sampling doesn't
+    // depend on pack size or on which worker processes the pack.
+    long firstRead;
+    // Global pack sequence number (0, 1, 2, ...). Workers claim packs by this
+    // number and writers reassemble output in this order.
+    size_t seq;
 };
 
 typedef struct ReadPack ReadPack;

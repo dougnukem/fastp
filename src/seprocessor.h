@@ -17,6 +17,7 @@
 #include "duplicate.h"
 #include "singleproducersingleconsumerlist.h"
 #include "readpool.h"
+#include "packring.h"
 
 using namespace std;
 
@@ -47,10 +48,14 @@ private:
     WriterThread* mLeftWriter;
     WriterThread* mFailedWriter;
     Duplicate* mDuplicate;
-    SingleProducerSingleConsumerList<ReadPack*>** mInputLists;
+    // See PairEndProcessor: readers publish by sequence number, workers claim.
+    PackRing* mRing;
+    alignas(128) std::atomic<size_t> mNextClaim;
+    bool mStaticSchedule;
     size_t mPackReadCounter;
     alignas(128) atomic_long mPackProcessedCounter;
     long mPackInMemLimit;
+    int mPackSize;
     ReadPool* mReadPool;
     std::mutex mBackpressureMtx;
     std::condition_variable mBackpressureCV;
