@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790697652583,
+  "lastUpdate": 1790917691471,
   "repoUrl": "https://github.com/dougnukem/fastp",
   "entries": {
     "Benchmark": [
@@ -581,6 +581,165 @@ window.BENCHMARK_DATA = {
           {
             "name": "atac_hiseq_pe -w4 processing",
             "value": 1.548,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "committer": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "distinct": true,
+          "id": "1dacad6a5a087f89218de407b05525d2bec2348e",
+          "message": "feat(bench): fit a line through two subset sizes; gate on CPU per pair\n\nProjecting one subset run needed stage timestamps and still overpredicted\nsome datasets. Each build is now run on the first 0.3M and 1.2M pairs of the\nsame input (--reads_to_process, no recompression; both above the 256K-read\ndetection cap), and a line through the two points gives a fixed cost\n(intercept) and a cost per pair (slope). Projected wall, CPU per pair and\npeak RSS are gated; the fixed cost and the measured subset numbers are shown\nin collapsed sections.\n\nOn 3 complete public runs at 4 and 16 cores, a line through two subset sizes\npredicted full-run CPU within 1-2% and wall within 2-4% (median error),\nagainst 3% and 11% for scaling a single subset.\n\n- Only -w 4 is run: CPU per pair doesn't depend on the thread count, and\n  -w 1 was the slowest cell.\n- gen_reads.py draws qualities from a pool built once instead of 150\n  Gaussians per read: 4x faster, so a 1.2M-pair file takes about 2 minutes.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-02T00:00:51-05:00",
+          "tree_id": "4171785172349d36eff017bb35bb9afbe10a93c8",
+          "url": "https://github.com/dougnukem/fastp/commit/1dacad6a5a087f89218de407b05525d2bec2348e"
+        },
+        "date": 1790917691018,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "synthetic_pe -w4 projected wall",
+            "value": 498.023,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 CPU per pair (read for SE)",
+            "value": 38.654,
+            "unit": "µs"
+          },
+          {
+            "name": "synthetic_pe -w4 peak RSS",
+            "value": 1286.016,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_pe -w4 fixed cost (wall)",
+            "value": 1.01,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 projected CPU",
+            "value": 1933.733,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 wall time",
+            "value": 12.938,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 CPU (user+sys)",
+            "value": 47.435,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 adapter detection",
+            "value": 0.803,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 processing",
+            "value": 12.007,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected wall",
+            "value": 243.99,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 CPU per pair (read for SE)",
+            "value": 18.841,
+            "unit": "µs"
+          },
+          {
+            "name": "synthetic_se -w4 peak RSS",
+            "value": 1240.227,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_se -w4 fixed cost (wall)",
+            "value": 0.641,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected CPU",
+            "value": 942.681,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 wall time",
+            "value": 6.478,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 CPU (user+sys)",
+            "value": 23.229,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 adapter detection",
+            "value": 0.449,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 processing",
+            "value": 5.956,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected wall",
+            "value": 202.492,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 CPU per pair (read for SE)",
+            "value": 15.651,
+            "unit": "µs"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 peak RSS",
+            "value": 1218.914,
+            "unit": "MB"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 fixed cost (wall)",
+            "value": 0.625,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected CPU",
+            "value": 783.192,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 wall time",
+            "value": 5.474,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 CPU (user+sys)",
+            "value": 19.431,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 adapter detection",
+            "value": 0.438,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 processing",
+            "value": 4.95,
             "unit": "s"
           }
         ]
