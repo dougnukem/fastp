@@ -110,6 +110,9 @@ N reads of the original file, and report the intercept (fixed cost) and slope
 (CPU-seconds per pair) separately. Three datasets and one full run per cell is
 a small sample; treat the error figures as indicative.
 
+The benchmark CI job proposed upstream (`bench.py`) uses this method with 0.3M and 1.2M
+pairs, `-w 4`, and gates on projected wall, CPU per pair and peak RSS.
+
 ## A code-path model of throughput
 
 Processing throughput is set by whichever resource saturates first:
