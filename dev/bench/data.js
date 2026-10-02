@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790917691471,
+  "lastUpdate": 1790920036748,
   "repoUrl": "https://github.com/dougnukem/fastp",
   "entries": {
     "Benchmark": [
@@ -740,6 +740,165 @@ window.BENCHMARK_DATA = {
           {
             "name": "atac_hiseq_pe -w4 processing",
             "value": 4.95,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "committer": {
+            "email": "noreply@anthropic.com",
+            "name": "Claude",
+            "username": "claude"
+          },
+          "distinct": true,
+          "id": "6624a53143aafee095d576627f57e4e323bf09a4",
+          "message": "fix(bench): survive an unavailable input; restart on 416; cache only complete sets\n\nThe ENA stream for the public input can be left half-populated when two jobs\nstart pulling the same file at once: the first connection returns a few KB and\nevery ranged request then gets 416 Range Not Satisfiable. A PR's CI shouldn't\nfail on that.\n\n- On 416, restart the download from byte 0 instead of retrying the same offset.\n- If an input still can't be fetched, skip that dataset with a warning, say so\n  in the report, and run the rest.\n- Cache the datasets only when the set is complete (separate restore and save\n  steps), so a skipped input is retried on the next run.\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-02T00:39:21-05:00",
+          "tree_id": "1a5efb150c0d61092be7160bf19fb514c3d795bf",
+          "url": "https://github.com/dougnukem/fastp/commit/6624a53143aafee095d576627f57e4e323bf09a4"
+        },
+        "date": 1790920036039,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "synthetic_pe -w4 projected wall",
+            "value": 494.187,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 CPU per pair (read for SE)",
+            "value": 38.646,
+            "unit": "µs"
+          },
+          {
+            "name": "synthetic_pe -w4 peak RSS",
+            "value": 1286.227,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_pe -w4 fixed cost (wall)",
+            "value": 1.034,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 projected CPU",
+            "value": 1933.331,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 wall time",
+            "value": 12.87,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 CPU (user+sys)",
+            "value": 47.386,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 adapter detection",
+            "value": 0.802,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_pe -w4 processing",
+            "value": 11.941,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected wall",
+            "value": 243.826,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 CPU per pair (read for SE)",
+            "value": 18.793,
+            "unit": "µs"
+          },
+          {
+            "name": "synthetic_se -w4 peak RSS",
+            "value": 1240.227,
+            "unit": "MB"
+          },
+          {
+            "name": "synthetic_se -w4 fixed cost (wall)",
+            "value": 0.636,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 projected CPU",
+            "value": 940.264,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 wall time",
+            "value": 6.473,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 CPU (user+sys)",
+            "value": 23.168,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 adapter detection",
+            "value": 0.449,
+            "unit": "s"
+          },
+          {
+            "name": "synthetic_se -w4 processing",
+            "value": 5.951,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected wall",
+            "value": 200.049,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 CPU per pair (read for SE)",
+            "value": 15.517,
+            "unit": "µs"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 peak RSS",
+            "value": 1218.719,
+            "unit": "MB"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 fixed cost (wall)",
+            "value": 0.643,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 projected CPU",
+            "value": 776.545,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 wall time",
+            "value": 5.429,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 CPU (user+sys)",
+            "value": 19.31,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 adapter detection",
+            "value": 0.438,
+            "unit": "s"
+          },
+          {
+            "name": "atac_hiseq_pe -w4 processing",
+            "value": 4.903,
             "unit": "s"
           }
         ]
