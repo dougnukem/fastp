@@ -3,7 +3,7 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    branches: [master, 'bench-base/**']
     # labeled/unlabeled: re-evaluate the gate when the sign-off label changes
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
