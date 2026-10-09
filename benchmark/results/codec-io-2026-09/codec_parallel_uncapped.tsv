@@ -1,0 +1,13 @@
+dataset	tool	input	threads	wall	cpu	uncomp_MBps
+rna_nova	rapidgzip	gzip	4	10.97	43.37	951
+rna_nova	bgzip	bgzf	4	2.99	14.21	3490
+rna_nova	rapidgzip	gzip	16	3.04	45.54	3433
+rna_nova	bgzip	bgzf	16	1.16	15.74	8998
+rna_nova	rapidgzip	gzip	48	1.79	69.16	5831
+rna_nova	bgzip	bgzf	48	1.39	16.38	7509
+atac_hiseq	rapidgzip	gzip	4	39.34	154.95	828
+atac_hiseq	bgzip	bgzf	4	10.73	50.22	3036
+atac_hiseq	rapidgzip	gzip	16	10.15	157.34	3210
+atac_hiseq	bgzip	bgzf	16	3.48	50.96	9363
+atac_hiseq	rapidgzip	gzip	48	5.52	238.73	5903
+atac_hiseq	bgzip	bgzf	48	4.04	52.63	8065
