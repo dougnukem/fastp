@@ -1,6 +1,7 @@
 #!/bin/bash
 # Standalone decode throughput (no fastp) for each variant file, piped to /dev/null. The single-thread
-# plain-gzip numbers are the "decode floor" in benchmark/gzip-vs-bgzf-design.md.
+# igzip time on the plain file is the "decode floor" in benchmark/gzip-vs-bgzf-design.md (fastp decodes
+# plain gzip with ISA-L); gzip -dc is informational.
 # Usage: decode_baseline.sh <data_dir> <out_tsv> [threads_csv] [datasets]
 # result: OK | ABSENT (tool not installed, empty wall_s) | EXIT<n> (installed but failed, empty wall_s).
 # No `set -e`: every step is checked explicitly; any failure makes the script exit 1 at the end.

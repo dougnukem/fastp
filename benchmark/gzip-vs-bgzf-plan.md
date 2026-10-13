@@ -451,7 +451,7 @@ git push
 
 **Interfaces:**
 - Consumes: `run_timed.py` (Task 1), variant files (Task 2).
-- Produces: `decode_baseline.sh <data_dir> <out_tsv> [threads_csv="1,2,4,8,16"] [datasets="wgs"]` writes the baseline TSV (columns in Global Constraints). Tools: `gzip -dc` and `igzip -dc` (threads 1), `bgzip -dc -@ N` (BGZF file), `rapidgzip -P N` (both variants). A missing tool gives rows with `result=ABSENT` and empty `wall_s`.
+- Produces: `decode_baseline.sh <data_dir> <out_tsv> [threads_csv="1,2,4,8,16"] [datasets="wgs"]` writes the baseline TSV (columns in Global Constraints). Tools: `gzip -dc` and `igzip -dc` (threads 1), `bgzip -dc -@ N` (BGZF file), `rapidgzip -P N` (both variants). A missing tool gives rows with `result=ABSENT` and empty `wall_s`. The decode floor is `igzip`'s single-thread plain time (fastp decodes plain gzip with ISA-L); `gzip -dc` is informational only.
 
 - [ ] **Step 1: Write the failing test** (append to `test_bench_smoke.sh`, before the final `echo PASS`)
 
@@ -545,7 +545,7 @@ git push
 
 **Interfaces:**
 - Consumes: the results TSV (Task 3) and baseline TSV (Task 4), columns as in Global Constraints.
-- Produces: `analyze_gzip_vs_bgzf.py <bench.tsv> [baseline.tsv] [--large DATASET]` prints markdown (speedup table per dataset and mode, plain reader-thread CPU fraction, decode floor, verdict). Exit code 1 if any plain-vs-BGZF output mismatch. Importable: `decode_floor(baseline_rows, ds) -> float | None`, `decide(walls, floor, ds) -> (verdict, detail)` where `walls` maps `(dataset, mode, format, threads)` to a list of seconds, and `find_mismatches(bench_rows) -> list`.
+- Produces: `analyze_gzip_vs_bgzf.py <bench.tsv> [baseline.tsv] [--large DATASET]` prints markdown (speedup table per dataset and mode, plain reader-thread CPU fraction, decode floor, verdict). Exit code 1 if any plain-vs-BGZF output mismatch. The decode floor is the slower mate's single-thread `igzip -dc` time on the plain variant; with no `igzip` rows it is `None` and the verdict is INCONCLUSIVE ("igzip decode baseline missing: install isa-l's igzip"). The `gzip -dc` time is printed as an informational line, never as the floor. Importable: `decode_floor(baseline_rows, ds, tool="igzip") -> float | None`, `decide(walls, floor, ds) -> (verdict, detail)` where `walls` maps `(dataset, mode, format, threads)` to a list of seconds, and `find_mismatches(bench_rows) -> list`.
 
 - [ ] **Step 1: Write the failing test**
 

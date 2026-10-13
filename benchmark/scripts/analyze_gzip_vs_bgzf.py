@@ -14,6 +14,8 @@ from collections import defaultdict
 DECODE_BOUND_SLACK = 1.30  # plain wall within 30% of the single-thread decode floor
 MIN_BGZF_SPEEDUP = 1.5
 RULE_MODE, RULE_THREADS = "C", 16
+FLOOR_TOOL = "igzip"  # fastp decodes plain gzip with ISA-L, so igzip is the like-for-like floor
+NO_FLOOR = "igzip decode baseline missing: install isa-l's igzip"
 
 
 def med(xs):
@@ -26,7 +28,7 @@ class InputError(Exception):
 
 BENCH_COLS = {"dataset", "format", "mode", "threads", "result", "wall_s", "max_thread_cpu_frac",
               "reads_after", "digest"}
-BASE_COLS = {"dataset", "mate", "variant", "threads", "result", "wall_s"}
+BASE_COLS = {"dataset", "mate", "variant", "tool", "threads", "result", "wall_s"}
 
 
 def load(path, cols):
@@ -50,11 +52,11 @@ def num(row, col, path):
                          f"threads {row.get('threads')})")
 
 
-def decode_floor(baseline, ds):
-    """Slower mate's fastest single-thread plain-gzip decode time (PE runs one reader per mate)."""
+def decode_floor(baseline, ds, tool=FLOOR_TOOL):
+    """Slower mate's fastest single-thread plain-gzip decode time with `tool` (PE runs one reader per mate)."""
     per_mate = defaultdict(list)
     for r in baseline:
-        if (r["dataset"] == ds and r["variant"] == "plain" and r["threads"] == "1"
+        if (r["dataset"] == ds and r["tool"] == tool and r["variant"] == "plain" and r["threads"] == "1"
                 and r["result"] == "OK" and r["wall_s"]):
             per_mate[r["mate"]].append(num(r, "wall_s", "baseline"))
     if not {"1", "2"} <= set(per_mate):  # a missing mate would understate the floor
@@ -83,7 +85,7 @@ def decide(walls, floor, ds, failures=None):
     bgzf = med(walls.get((ds, RULE_MODE, "bgzf", RULE_THREADS), []))
     if plain is None or bgzf is None or floor is None:
         return ("INCONCLUSIVE: missing plain, BGZF or decode-floor data "
-                f"for mode {RULE_MODE} at -w {RULE_THREADS}", "")
+                f"for mode {RULE_MODE} at -w {RULE_THREADS}", NO_FLOOR if floor is None else "")
     bound = plain <= floor * DECODE_BOUND_SLACK
     if bgzf <= 0 or floor <= 0:
         return ("INCONCLUSIVE: non-positive BGZF wall time or decode floor", "")
@@ -168,7 +170,12 @@ def run():
     for ds in sorted({k[0] for k in keys}):
         floor = decode_floor(baseline, ds)
         print(f"## {ds}\n")
-        print("Single-thread decode floor: " + (f"{floor:.1f}s" if floor else "not measured") + "\n")
+        print("Single-thread decode floor: "
+              + (f"{floor:.1f}s ({FLOOR_TOOL} -dc, slower mate)" if floor else f"not measured ({NO_FLOOR})"))
+        gz = decode_floor(baseline, ds, "gzip")
+        if gz:
+            print(f"gzip -dc single-thread (informational, not the floor): {gz:.1f}s")
+        print()
         for mode in sorted({k[1] for k in keys if k[0] == ds}):
             print(f"### mode {mode}\n")
             print("| -w | plain s | BGZF s | BGZF speedup | plain busiest-thread CPU | plain / floor |")

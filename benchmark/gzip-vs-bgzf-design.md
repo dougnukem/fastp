@@ -43,7 +43,9 @@ the level.
 | C default, gz output | defaults, `-o/-O *.gz` | whole pipeline including parallel output compression |
 
 **Decode baselines** (no fastp): `gzip -dc`, `igzip -dc` (if available), `bgzip -dc -@ N`, and `rapidgzip -P N`
-(if available), each piped to `/dev/null`. The single-thread numbers give the decode floor. Per-thread CPU is sampled
+(if available), each piped to `/dev/null`. The decode floor is `igzip`'s single-thread time on the plain file, because
+fastp decodes plain gzip with ISA-L; `gzip -dc` is reported for information only, and without `igzip` the verdict is
+inconclusive. Per-thread CPU is sampled
 during the fastp runs (`pidstat -t` or `top -H`), and thread names come from the existing pack-trace work (#11),
 so the claim "reader thread at ~100% CPU" is observed, not inferred.
 
@@ -58,7 +60,7 @@ digest-mismatch flag.
 
 ## Decision rule for the follow-up (proposed, for review)
 
-Evaluated on mode C (the realistic pipeline) at `-w 16`. The decode floor is the single-thread decode time of the
+Evaluated on mode C (the realistic pipeline) at `-w 16`. The decode floor is the single-thread `igzip` decode time of the
 slower mate, because paired-end runs give each mate its own reader thread. Propose a plain-gzip parallel reader
 upstream only if, on the large file, both hold:
 

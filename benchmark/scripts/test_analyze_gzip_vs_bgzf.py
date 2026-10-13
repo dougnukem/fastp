@@ -4,13 +4,16 @@ import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_gzip_vs_bgzf as a
 
+BENCH_COLS = ("dataset", "format", "mode", "threads", "result", "wall_s", "max_thread_cpu_frac",
+              "reads_after", "digest")
+BASE_COLS = ("dataset", "mate", "variant", "tool", "threads", "result", "wall_s", "uncompressed_bytes")
 
 def bench_row(fmt, wall, t=16, mode="C", reads="100", digest="-", ds="big", result="OK"):
     return dict(dataset=ds, format=fmt, mode=mode, threads=str(t), result=result, wall_s=str(wall),
                 max_thread_cpu_frac="0.99", reads_after=reads, digest=digest)
 
 
-def base_row(mate, wall, variant="plain", tool="gzip", t="1", result="OK", ds="big"):
+def base_row(mate, wall, variant="plain", tool="igzip", t="1", result="OK", ds="big"):
     return dict(dataset=ds, mate=mate, variant=variant, tool=tool, threads=t, result=result,
                 wall_s=str(wall), uncompressed_bytes="1")
 
@@ -19,10 +22,25 @@ class AnalyzeTest(unittest.TestCase):
     def walls(self, plain, bgzf):
         return {("big", "C", "plain", 16): [plain], ("big", "C", "bgzf", 16): [bgzf]}
 
-    def test_floor_is_slower_mate_of_fastest_single_thread_tool(self):
-        rows = [base_row("1", 50), base_row("1", 40, tool="igzip"), base_row("2", 45),
-                base_row("2", 5, tool="igzip", result="ABSENT")]  # ABSENT must be ignored
+    def test_floor_is_slower_mate_single_thread_igzip(self):
+        rows = [base_row("1", 50), base_row("1", 40), base_row("2", 45),
+                base_row("2", 5, result="ABSENT")]  # ABSENT must be ignored
         self.assertEqual(a.decode_floor(rows, "big"), 45.0)
+
+    def test_floor_comes_from_igzip_even_when_gzip_is_faster(self):
+        rows = [base_row("1", 50), base_row("2", 45),
+                base_row("1", 10, tool="gzip"), base_row("2", 10, tool="gzip")]
+        self.assertEqual(a.decode_floor(rows, "big"), 50.0)
+
+    def test_gzip_only_baseline_gives_no_floor(self):
+        rows = [base_row("1", 50, tool="gzip"), base_row("2", 45, tool="gzip"),
+                base_row("1", "", result="ABSENT"), base_row("2", "", result="ABSENT")]
+        self.assertIsNone(a.decode_floor(rows, "big"))
+
+    def test_missing_igzip_floor_detail_says_install_igzip(self):
+        verdict, detail = a.decide(self.walls(60, 20), None, "big")
+        self.assertTrue(verdict.startswith("INCONCLUSIVE"))
+        self.assertIn("igzip decode baseline missing: install isa-l's igzip", detail)
 
     def test_floor_none_when_a_mate_is_missing(self):
         self.assertIsNone(a.decode_floor([base_row("1", 50)], "big"))
@@ -75,19 +93,41 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual(a.wall_cell(k, {}, {k: ["HUNG"] * 3}), "FAILED (3/3)")
         self.assertEqual(a.wall_cell(k, {}, {}), "-")
 
-    def run_main(self, rows, *extra):
-        import subprocess, tempfile
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyze_gzip_vs_bgzf.py")
-        hdr = "dataset\tformat\tmode\tthreads\tresult\twall_s\tmax_thread_cpu_frac\treads_after\tdigest\n"
+    @staticmethod
+    def write_tsv(rows, cols):
+        import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
-            f.write(hdr)
+            f.write("\t".join(cols) + "\n")
             for r in rows:
-                f.write("\t".join(r[c] for c in ("dataset", "format", "mode", "threads", "result", "wall_s",
-                                                  "max_thread_cpu_frac", "reads_after", "digest")) + "\n")
+                f.write("\t".join(r[c] for c in cols) + "\n")
+        return f.name
+
+    def run_main(self, rows, *extra, baseline=None):
+        import subprocess
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyze_gzip_vs_bgzf.py")
+        files = [self.write_tsv(rows, BENCH_COLS)]
+        if baseline is not None:
+            files.append(self.write_tsv(baseline, BASE_COLS))
         try:
-            return subprocess.run([sys.executable, script, f.name, *extra], capture_output=True, text=True)
+            return subprocess.run([sys.executable, script, *files, *extra], capture_output=True, text=True)
         finally:
-            os.unlink(f.name)
+            for p in files:
+                os.unlink(p)
+
+    def test_summary_names_the_floor_tool_and_shows_gzip_as_informational(self):
+        base = [base_row("1", 50), base_row("2", 45),
+                base_row("1", 12, tool="gzip"), base_row("2", 11, tool="gzip")]
+        r = self.run_main([bench_row("plain", 60), bench_row("bgzf", 20)], "--large", "big", baseline=base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Single-thread decode floor: 50.0s (igzip -dc", r.stdout)
+        self.assertIn("gzip -dc single-thread (informational, not the floor): 12.0s", r.stdout)
+
+    def test_summary_without_igzip_says_install_it(self):
+        base = [base_row("1", 12, tool="gzip"), base_row("2", 11, tool="gzip")]
+        r = self.run_main([bench_row("plain", 60), bench_row("bgzf", 20)], "--large", "big", baseline=base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("INCONCLUSIVE", r.stdout)
+        self.assertIn("igzip decode baseline missing: install isa-l's igzip", r.stdout)
 
     def test_partial_failure_and_all_failed_rendered_by_main(self):
         rows = [bench_row("plain", 10), bench_row("plain", 0, result="HUNG"),
