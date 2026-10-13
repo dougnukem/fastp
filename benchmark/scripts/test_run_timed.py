@@ -26,7 +26,7 @@ def run(*args):
 class RunTimedTest(unittest.TestCase):
     def test_exit_code_and_wall(self):
         f = run("--", "sh", "-c", "sleep 0.3; exit 3")
-        self.assertEqual(len(f), 6)
+        self.assertEqual(len(f), 7)
         self.assertEqual(f[0], "3")
         self.assertGreaterEqual(float(f[1]), 0.3)
 
@@ -97,9 +97,34 @@ class RunTimedTest(unittest.TestCase):
 
     def test_short_run_field6_is_na_or_float(self):
         f = run("--", "true")
-        self.assertEqual(len(f), 6)
+        self.assertEqual(len(f), 7)
         if f[5] != "NA":
             float(f[5])
+
+    @unittest.skipIf(sys.platform.startswith("linux"), "off-Linux behaviour")
+    def test_thread_cpu_top_is_na_off_linux(self):
+        f = run("--sample-interval", "0.1", "--", "sleep", "0.3")
+        self.assertEqual(f[5:], ["NA", "NA"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc")
+    def test_thread_cpu_top_lists_busiest_threads_on_linux(self):
+        # the second thread hashes (releases the GIL), so both threads burn CPU at once
+        prog = ("import hashlib, threading, time\n"
+                "b = bytes(1 << 24)\n"
+                "def hsh():\n    t = time.time()\n    while time.time() - t < 1.0: hashlib.sha256(b)\n"
+                "th = threading.Thread(target=hsh); th.start()\n"
+                "t = time.time()\nwhile time.time() - t < 1.5: pass\nth.join()")
+        f = run("--sample-interval", "0.1", "--", sys.executable, "-c", prog)
+        top = [e.split(":") for e in f[6].split(",")]
+        self.assertTrue(2 <= len(top) <= 3, f[6])
+        for tid, comm, frac in top:
+            int(tid)
+            self.assertTrue(comm and comm != "NA", f[6])
+            float(frac)
+        fracs = [float(e[2]) for e in top]
+        self.assertEqual(fracs, sorted(fracs, reverse=True))
+        self.assertEqual(f"{fracs[0]:.3f}", f[5])  # field 6 stays the busiest fraction
+        self.assertGreater(fracs[1], 0.1)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc")
     def test_thread_cpu_frac_sampled_on_linux(self):

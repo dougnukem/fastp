@@ -134,6 +134,21 @@ def find_mismatches(bench):
     return compare_outputs(bench)[0]
 
 
+THREAD_CAVEAT = ("fastp does not name its threads; the reader thread is inferred from the two busiest threads, "
+                 "not observed (build with the pack-trace thread names from fork PR #11 to observe it)")
+
+
+def second_frac(top):
+    """Second-busiest thread's CPU fraction from run_timed.py's thread_cpu_top (tid:comm:frac,...)."""
+    parts = (top or "NA").split(",")
+    if len(parts) < 2:
+        return None
+    try:
+        return float(parts[1].rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
 def cache_states(rows):
     return sorted({r["cache"] for r in rows if r["result"] == "OK"})
 
@@ -175,13 +190,16 @@ def run():
 
     bench = load(args.bench, BENCH_COLS)
     baseline = load(args.baseline, BASE_COLS) if args.baseline else []
-    walls, fracs, failures = defaultdict(list), defaultdict(list), defaultdict(list)
+    walls, fracs, fracs2, failures = defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list)
     for r in bench:
         k = (r["dataset"], r["mode"], r["format"], int(num(r, "threads", args.bench)))
         if r["result"] == "OK":
             walls[k].append(num(r, "wall_s", args.bench))
             if r["max_thread_cpu_frac"] not in ("", "NA"):
                 fracs[k].append(num(r, "max_thread_cpu_frac", args.bench))
+            f2 = second_frac(r.get("thread_cpu_top"))  # column is absent in older result files
+            if f2 is not None:
+                fracs2[k].append(f2)
         else:
             failures[k].append(r["result"])
 
@@ -198,17 +216,20 @@ def run():
         print()
         for mode in sorted({k[1] for k in keys if k[0] == ds}):
             print(f"### mode {mode}\n")
-            print("| -w | plain s | BGZF s | BGZF speedup | plain busiest-thread CPU | plain / floor |")
-            print("|---|---|---|---|---|---|")
+            # paired-end has one reader per mate, so two near-saturated threads are expected
+            print("| -w | plain s | BGZF s | BGZF speedup | plain busiest-thread CPU "
+                  "| plain 2nd-busiest thread CPU | plain / floor |")
+            print("|---|---|---|---|---|---|---|")
             for t in sorted({k[3] for k in keys if k[:2] == (ds, mode)}):
                 p = med(walls.get((ds, mode, "plain", t), []))
                 b = med(walls.get((ds, mode, "bgzf", t), []))
                 fr = med(fracs.get((ds, mode, "plain", t), []))
+                fr2 = med(fracs2.get((ds, mode, "plain", t), []))
                 print(f"| {t} | {wall_cell((ds, mode, 'plain', t), walls, failures)} | "
                       f"{wall_cell((ds, mode, 'bgzf', t), walls, failures)} | "
-                      f"{cell(p / b if p and b else None, '{:.2f}x')} | {cell(fr, '{:.2f}')} | "
+                      f"{cell(p / b if p and b else None, '{:.2f}x')} | {cell(fr, '{:.2f}')} | {cell(fr2, '{:.2f}')} | "
                       f"{cell(p / floor if p and floor else None, '{:.2f}')} |")
-            print()
+            print(f"\n{THREAD_CAVEAT}\n")
         bad = sorted((k, v) for k, v in failures.items() if k[0] == ds)
         if bad:
             print("### Failed runs\n")

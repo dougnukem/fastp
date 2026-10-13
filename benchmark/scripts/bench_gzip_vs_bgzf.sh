@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sweeps plain-gzip vs BGZF input x mode (A/B/C) x thread count and records wall time, CPU, RSS,
-# busiest-thread CPU fraction, and an output check. See benchmark/gzip-vs-bgzf-design.md.
+# busiest-thread CPU fraction, the three busiest threads (thread_cpu_top), and an output check. See benchmark/gzip-vs-bgzf-design.md.
 # Usage: bench_gzip_vs_bgzf.sh <fastp_bin> <data_dir> <out_tsv> [threads_csv] [reps] [timeout_s] [datasets]
 # data_dir holds <ds>_R1.<plain|bgzf>.fastq.gz and _R2 (see make_variants.sh).
 # Environment: DIGEST=1 (default) digests mode-C output; DROP_CACHE=1 drops the page cache before each run;
@@ -39,7 +39,7 @@ trap '[ -n "$WORK" ] && rm -rf "$WORK"; [ "$SCRATCH_MADE" = 1 ] && rmdir "$SCRAT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-printf 'dataset\tformat\tmode\tthreads\trep\tbgzf_budget\tcache\tresult\twall_s\tuser_s\tsys_s\tmax_rss_kb\tmax_thread_cpu_frac\treads_after\tdigest\n' > "$OUT" \
+printf 'dataset\tformat\tmode\tthreads\trep\tbgzf_budget\tcache\tresult\twall_s\tuser_s\tsys_s\tmax_rss_kb\tmax_thread_cpu_frac\treads_after\tdigest\tthread_cpu_top\n' > "$OUT" \
   || { echo "cannot write $OUT" >&2; exit 1; }
 
 # A: reader + minimal work. B: default processing, no output. C: default processing + gz output.
@@ -83,12 +83,12 @@ run_one() {
   res=$(python3 "$HERE/run_timed.py" --timeout "$TIMEOUT" --stdout "$work/out.log" --stderr "$work/err.log" -- \
     "$FASTP" -w "$t" $(mode_flags "$mode") -i "$r1" -I "$r2" ${outargs[@]+"${outargs[@]}"} \
     -j "$work/r.json" -h "$work/r.html")
-  local ec wall user sys rss frac
-  IFS=$'\t' read -r ec wall user sys rss frac <<< "$res"
+  local ec wall user sys rss frac top
+  IFS=$'\t' read -r ec wall user sys rss frac top <<< "$res"
   local result=OK reads=- digest=-
-  if [ -z "$ec" ] || [ -z "$frac" ]; then
+  if [ -z "$ec" ] || [ -z "$top" ]; then
     echo "run_timed.py gave no usable result for $ds/$fmt/$mode/w$t/rep$rep: '$res'" >&2
-    result=RUNERR; wall=; user=; sys=; rss=; frac=
+    result=RUNERR; wall=; user=; sys=; rss=; frac=; top=
   elif [ "$ec" = 137 ]; then result=HUNG
   elif [ "$ec" != 0 ]; then result="EXIT$ec"
   else
@@ -106,8 +106,8 @@ run_one() {
   fi
   local budget=-
   [ "$fmt" = bgzf ] && budget=$(bgzf_budget "$t")
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$ds" "$fmt" "$mode" "$t" "$rep" "$budget" "$cache" "$result" "$wall" "$user" "$sys" "$rss" "$frac" "$reads" "$digest" | tee -a "$OUT"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$ds" "$fmt" "$mode" "$t" "$rep" "$budget" "$cache" "$result" "$wall" "$user" "$sys" "$rss" "$frac" "$reads" "$digest" "$top" | tee -a "$OUT"
   [ "$result" = OK ] || FAILS=$((FAILS + 1))
   rm -rf "$work"; WORK=
 }

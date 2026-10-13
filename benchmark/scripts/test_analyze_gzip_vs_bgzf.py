@@ -102,10 +102,10 @@ class AnalyzeTest(unittest.TestCase):
                 f.write("\t".join(r[c] for c in cols) + "\n")
         return f.name
 
-    def run_main(self, rows, *extra, baseline=None):
+    def run_main(self, rows, *extra, baseline=None, bench_cols=BENCH_COLS):
         import subprocess
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyze_gzip_vs_bgzf.py")
-        files = [self.write_tsv(rows, BENCH_COLS)]
+        files = [self.write_tsv(rows, bench_cols)]
         if baseline is not None:
             files.append(self.write_tsv(baseline, BASE_COLS))
         try:
@@ -136,6 +136,29 @@ class AnalyzeTest(unittest.TestCase):
                           baseline=base)
         self.assertIn("Cache state: bench cold; baseline cold", r.stdout)
         self.assertNotIn("WARNING", r.stdout)
+
+    def test_second_busiest_thread_and_caveat(self):
+        rows = [bench_row("plain", 60), bench_row("bgzf", 20)]
+        rows[0]["thread_cpu_top"] = "101:fastp:0.980,102:fastp:0.950,103:fastp:0.200"
+        rows[1]["thread_cpu_top"] = "NA"
+        r = self.run_main(rows, bench_cols=BENCH_COLS + ("thread_cpu_top",))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("plain 2nd-busiest thread CPU", r.stdout)
+        self.assertIn("| 0.99 | 0.95 |", r.stdout)
+        self.assertIn("fastp does not name its threads; the reader thread is inferred from the two busiest "
+                      "threads, not observed (build with the pack-trace thread names from fork PR #11 to "
+                      "observe it)", r.stdout)
+
+    def test_second_busiest_absent_without_column(self):
+        r = self.run_main([bench_row("plain", 60), bench_row("bgzf", 20)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("| 0.99 | - |", r.stdout)
+
+    def test_second_frac(self):
+        self.assertEqual(a.second_frac("1:fastp:0.9,2:fastp:0.8"), 0.8)
+        self.assertIsNone(a.second_frac("1:fastp:0.9"))
+        self.assertIsNone(a.second_frac("NA"))
+        self.assertIsNone(a.second_frac(None))
 
     def test_summary_without_igzip_says_install_it(self):
         base = [base_row("1", 12, tool="gzip"), base_row("2", 11, tool="gzip")]

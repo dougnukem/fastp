@@ -14,7 +14,10 @@ bash "$HERE/bench_gzip_vs_bgzf.sh" "$FASTP" "$T/data" "$T/out.tsv" "1,2" 1 60 sm
 
 rows=$(($(wc -l < "$T/out.tsv") - 1))
 [ "$rows" = 12 ] || { echo "expected 12 rows (2 formats x 3 modes x 2 thread counts), got $rows"; exit 1; }
-head -1 "$T/out.tsv" | grep -q $'^dataset\tformat\tmode\tthreads\trep\tbgzf_budget\tcache\tresult\twall_s' || { echo "bad header"; exit 1; }
+head -1 "$T/out.tsv" | grep -q $'^dataset\tformat\tmode\tthreads\trep\tbgzf_budget\tcache\tresult\twall_s\tuser_s\tsys_s\tmax_rss_kb\tmax_thread_cpu_frac\treads_after\tdigest\tthread_cpu_top$' || { echo "bad header"; exit 1; }
+# thread_cpu_top: NA off Linux, else up to three tid:comm:frac entries
+awk -F'\t' 'NR>1 && (NF!=16 || $16 !~ /^(NA|[0-9]+:[^:,]+:[0-9.]+(,[0-9]+:[^:,]+:[0-9.]+){0,2})$/){bad=1} END{exit bad}' "$T/out.tsv" \
+  || { echo "bad thread_cpu_top column"; exit 1; }
 bad=$(awk -F'\t' 'NR>1 && $8!="OK"' "$T/out.tsv" | wc -l | tr -d ' ')
 [ "$bad" = 0 ] || { echo "non-OK rows:"; awk -F'\t' 'NR>1 && $8!="OK"' "$T/out.tsv"; exit 1; }
 # both formats must produce the same read count for every (mode, threads)

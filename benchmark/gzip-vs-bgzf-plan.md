@@ -16,7 +16,7 @@
 - Public accessions only. No Form Bio production data, paths or usage details anywhere in the repo or PR.
 - Shell scripts start with `#!/bin/bash` and use `set -uo pipefail` with no `set -e` (as `run_backfill.sh` does), so every failing step must fail loudly: a clear stderr message, a non-OK or `EXIT<n>` row, and a non-zero exit at the end. Test scripts may use `set -e`. They must run on macOS bash 3.2 for smoke tests and on Linux for real runs. No bash 4 features. Guard empty arrays with `${arr[@]+"${arr[@]}"}`.
 - Python is stdlib only, tested with `unittest`.
-- Results TSV columns, in order: `dataset format mode threads rep bgzf_budget cache result wall_s user_s sys_s max_rss_kb max_thread_cpu_frac reads_after digest`.
+- Results TSV columns, in order: `dataset format mode threads rep bgzf_budget cache result wall_s user_s sys_s max_rss_kb max_thread_cpu_frac reads_after digest thread_cpu_top`. `thread_cpu_top` (last, so older 15-column files still parse) is run_timed.py's 7th field; the analyzer tolerates its absence.
 - Baseline TSV columns, in order: `dataset mate variant tool threads cache result wall_s uncompressed_bytes`. `cache` uses the results TSV's values (`not_dropped`, `cold`, `unknown`), or `-` on an `ABSENT` row that did not run.
 - `format` and `variant` are `plain` or `bgzf`. `mode` is `A`, `B` or `C` as defined in the spec. `result` is `OK`, `HUNG` (any SIGKILL, so an OOM kill is indistinguishable from a timeout), `EXIT<n>`, `NOJSON`, `NODIGEST` or `RUNERR` (results TSV; only `OK` rows are analyzed), or `OK`, `ABSENT`, `EXIT<n>` (baseline TSV).
 - Variant files are named `<dataset>_R<1|2>.<plain|bgzf>.fastq.gz`. The `.gz` suffix is required, because fastp counts gz inputs by extension.
@@ -40,7 +40,7 @@
 - Test: `benchmark/scripts/test_run_timed.py`
 
 **Interfaces:**
-- Produces: `python3 run_timed.py [--timeout S] [--stdout FILE] [--stderr FILE] [--sample-interval S] -- CMD...` prints one tab-separated line `exit<TAB>wall_s<TAB>user_s<TAB>sys_s<TAB>max_rss_kb<TAB>max_thread_cpu_frac`. `exit` is 137 when the timeout kills the process group. `max_thread_cpu_frac` is `NA` off Linux or when the run was shorter than one sample interval.
+- Produces: `python3 run_timed.py [--timeout S] [--stdout FILE] [--stderr FILE] [--sample-interval S] -- CMD...` prints one tab-separated line `exit<TAB>wall_s<TAB>user_s<TAB>sys_s<TAB>max_rss_kb<TAB>max_thread_cpu_frac<TAB>thread_cpu_top`. `exit` is 137 when the timeout kills the process group. `max_thread_cpu_frac` is `NA` off Linux or when the run was shorter than one sample interval. `thread_cpu_top` is the three busiest sampled threads as `tid:comm:frac`, busiest first, comma-separated (`NA` likewise). SIGINT or SIGTERM to run_timed.py SIGKILLs the child's process group before exiting non-zero.
 
 - [ ] **Step 1: Write the failing test**
 

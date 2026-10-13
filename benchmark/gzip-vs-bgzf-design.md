@@ -45,9 +45,9 @@ the level.
 **Decode baselines** (no fastp): `gzip -dc`, `igzip -dc` (if available), `bgzip -dc -@ N`, and `rapidgzip -P N`
 (if available), each piped to `/dev/null`. The decode floor is `igzip`'s single-thread time on the plain file, because
 fastp decodes plain gzip with ISA-L; `gzip -dc` is reported for information only, and without `igzip` the verdict is
-inconclusive. Per-thread CPU is sampled
-during the fastp runs (`pidstat -t` or `top -H`), and thread names come from the existing pack-trace work (#11),
-so the claim "reader thread at ~100% CPU" is observed, not inferred.
+inconclusive. Per-thread CPU is sampled from `/proc` during the fastp runs, recording the three busiest threads.
+Upstream fastp does not name its threads, so with a stock build the reader thread is inferred from the two busiest
+threads (one reader per mate), not observed; a build with the pack-trace thread names (#11) makes it observed.
 
 **Hardware.** Numbers that go in the PR come from the same 48-vCPU AMD EPYC (n2d-highmem-48) used for the
 backfill, with data on local SSD and the page cache warmed (or dropped, recorded per run). Laptop runs are

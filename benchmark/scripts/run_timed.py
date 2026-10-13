@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Run a command and print one TSV line: exit, wall_s, user_s, sys_s, max_rss_kb, max_thread_cpu_frac.
+"""Run a command and print one TSV line: exit, wall_s, user_s, sys_s, max_rss_kb, max_thread_cpu_frac,
+thread_cpu_top.
 
 Usage: run_timed.py [--timeout S] [--stdout FILE] [--stderr FILE] [--sample-interval S] -- CMD...
 
 exit is 137 if --timeout killed the process group. max_thread_cpu_frac is the busiest sampled
 thread's CPU seconds divided by wall time (Linux /proc only; NA elsewhere). It is a lower bound:
 threads that exit between samples are missed, which is fine for a reader thread that lives
-for the whole run.
+for the whole run. thread_cpu_top is the three busiest sampled threads as tid:comm:frac, busiest
+first, comma-separated (NA off Linux). fastp does not name its threads, so comm alone cannot identify
+the reader thread.
 """
 import argparse
 import os
@@ -32,6 +35,16 @@ def thread_cpu(pid):
     return out
 
 
+def thread_comm(pid, tid):
+    """Thread name from /proc, with the TSV and list separators replaced."""
+    try:
+        with open(f"/proc/{pid}/task/{tid}/comm") as f:
+            name = f.read().strip()
+    except OSError:
+        return "NA"
+    return "".join("_" if c in "\t,: " else c for c in name) or "NA"
+
+
 def main():
     argv = sys.argv[1:]
     i = argv.index("--")
@@ -52,12 +65,14 @@ def main():
         t0 = time.monotonic()
         p = subprocess.Popen(cmd, stdout=so, stderr=se, start_new_session=True)
         done = threading.Event()
-        peak = {}
+        peak, comm = {}, {}
 
         def sampler():
             while not done.wait(args.sample_interval):
                 for tid, c in thread_cpu(p.pid).items():
                     peak[tid] = max(peak.get(tid, 0.0), c)
+                    if tid not in comm:
+                        comm[tid] = thread_comm(p.pid, tid)
 
         def kill():
             try:
@@ -65,13 +80,13 @@ def main():
             except ProcessLookupError:
                 pass
 
-        st = threading.Thread(target=sampler, daemon=True)
-        st.start()
-        timer = threading.Timer(args.timeout, kill) if args.timeout else None
-        if timer:
-            timer.daemon = True  # never keep Python alive after an interrupt
-            timer.start()
-        try:
+        try:  # from here on, any exit (including SIGINT/SIGTERM via stop) must take the child with it
+            st = threading.Thread(target=sampler, daemon=True)
+            st.start()
+            timer = threading.Timer(args.timeout, kill) if args.timeout else None
+            if timer:
+                timer.daemon = True  # never keep Python alive after an interrupt
+                timer.start()
             _, status, ru = os.wait4(p.pid, 0)
         except BaseException:
             kill()  # the child has its own session, so nothing else would stop it
@@ -87,8 +102,12 @@ def main():
         code = 128 - code
     p.returncode = code
     rss_kb = ru.ru_maxrss // 1024 if sys.platform == "darwin" else ru.ru_maxrss
-    frac = f"{max(peak.values()) / wall:.3f}" if peak and wall > 0 else "NA"
-    print(f"{code}\t{wall:.3f}\t{ru.ru_utime:.3f}\t{ru.ru_stime:.3f}\t{rss_kb}\t{frac}")
+    frac, top = "NA", "NA"
+    if peak and wall > 0:
+        busiest = sorted(peak, key=peak.get, reverse=True)
+        frac = f"{peak[busiest[0]] / wall:.3f}"
+        top = ",".join(f"{t}:{comm[t]}:{peak[t] / wall:.3f}" for t in busiest[:3])
+    print(f"{code}\t{wall:.3f}\t{ru.ru_utime:.3f}\t{ru.ru_stime:.3f}\t{rss_kb}\t{frac}\t{top}")
 
 
 if __name__ == "__main__":
