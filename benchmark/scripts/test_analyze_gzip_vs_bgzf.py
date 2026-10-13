@@ -167,13 +167,20 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("### Not compared", r.stdout)
         self.assertIn("only plain", r.stdout)
-        self.assertIn("1 groups compared; 1 groups not compared", r.stdout)
+        self.assertIn("No mismatches among the 1 groups compared (reads_after only; digest not run); "
+                      "1 groups not compared", r.stdout)
+
+    def test_agreement_line_names_fields_compared(self):
+        rows = [bench_row("plain", 10, digest="aa"), bench_row("bgzf", 5, digest="aa"),
+                bench_row("plain", 10, mode="A"), bench_row("bgzf", 5, mode="A")]
+        r = self.run_main(rows)
+        self.assertIn("No mismatches among the 2 groups compared (reads_after for all; digest for 1)", r.stdout)
 
     def test_digest_for_one_format_only_is_not_a_mismatch(self):
         rows = [bench_row("plain", 10, digest="aa"), bench_row("bgzf", 5, digest="-")]
         self.assertEqual(a.find_mismatches(rows), [])
-        mism, n, nc = a.compare_outputs(rows)
-        self.assertEqual((mism, n), ([], 1))
+        mism, n, nc, n_digest = a.compare_outputs(rows)
+        self.assertEqual((mism, n, n_digest), ([], 1, 0))
         self.assertIn("digest present only for plain", nc[0][3])
         self.assertEqual(self.run_main(rows).returncode, 0)
 

@@ -100,8 +100,9 @@ def decide(walls, floor, ds, failures=None):
 def compare_outputs(bench):
     """Compare plain vs BGZF output per (dataset, mode, threads) over OK runs.
 
-    Returns (mismatches, n_compared, not_compared). mismatches: (dataset, mode, threads, field,
-    sorted [(format, value)]). not_compared: (dataset, mode, threads, reason) -- never a pass."""
+    Returns (mismatches, n_compared, not_compared, n_digest). mismatches: (dataset, mode, threads, field,
+    sorted [(format, value)]). not_compared: (dataset, mode, threads, reason) -- never a pass.
+    n_digest: compared groups whose digest was also compared (reads_after is compared for all)."""
     groups = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))  # g -> fmt -> field -> values
     for r in bench:
         if r["result"] != "OK":
@@ -110,7 +111,7 @@ def compare_outputs(bench):
         groups[g][r["format"]]["reads_after"].add(r["reads_after"])
         if r["digest"] not in ("", "-"):
             groups[g][r["format"]]["digest"].add(r["digest"])
-    mism, nc, compared = [], [], 0
+    mism, nc, compared, n_digest = [], [], 0, 0
     for g in sorted(groups):
         fmts = groups[g]
         if not {"plain", "bgzf"} <= set(fmts):
@@ -123,9 +124,10 @@ def compare_outputs(bench):
                 if per["plain"] or per["bgzf"]:
                     nc.append((*g, f"digest present only for {'plain' if per['plain'] else 'bgzf'}"))
                 continue
+            n_digest += field == "digest"
             if len(per["plain"] | per["bgzf"]) > 1:
                 mism.append((*g, field, sorted((f, v) for f, vs in per.items() for v in vs)))
-    return mism, compared, nc
+    return mism, compared, nc, n_digest
 
 
 def find_mismatches(bench):
@@ -214,7 +216,7 @@ def run():
                 print(f"- mode {k[1]}, {k[2]}, -w {k[3]}: {len(v)} failed ({', '.join(sorted(v))})")
             print()
 
-    mism, n_cmp, not_cmp = compare_outputs(bench)
+    mism, n_cmp, not_cmp, n_digest = compare_outputs(bench)
     if args.large:
         if mism:
             print(f"## Decision ({args.large})\n\n**INVALID: plain and BGZF outputs differ, "
@@ -235,7 +237,9 @@ def run():
             print(f"- {m}")
         sys.exit(1)
     n_groups = len({tuple(x[:3]) for x in not_cmp})
-    print(f"No mismatches among the {n_cmp} groups compared; {n_groups} groups not compared.")
+    fields = (f"reads_after for all; digest for {n_digest}" if n_digest
+              else "reads_after only; digest not run")
+    print(f"No mismatches among the {n_cmp} groups compared ({fields}); {n_groups} groups not compared.")
 
 
 def main():
