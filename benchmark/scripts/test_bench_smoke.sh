@@ -52,18 +52,24 @@ bash "$HERE/bench_gzip_vs_bgzf.sh" "$FASTP" "$T/data" "$T/out2.tsv" "1" 1 60 nos
 # decode baselines: gzip always runs; an absent tool is ABSENT with an empty wall time, never 0
 rc=0; bash "$HERE/decode_baseline.sh" "$T/data" "$T/base.tsv" "1,2" smoke >/dev/null 2>"$T/berr.log" || rc=$?
 [ "$rc" = 0 ] || { echo "decode_baseline failed (rc=$rc)"; cat "$T/berr.log"; exit 1; }
-head -1 "$T/base.tsv" | grep -q $'^dataset\tmate\tvariant\ttool\tthreads\tresult\twall_s\tuncompressed_bytes' || { echo "bad baseline header"; exit 1; }
-ok=$(awk -F'\t' 'NR>1 && $4=="gzip" && $6=="OK" && $7!=""' "$T/base.tsv" | wc -l | tr -d ' ')
+head -1 "$T/base.tsv" | grep -q $'^dataset\tmate\tvariant\ttool\tthreads\tcache\tresult\twall_s\tuncompressed_bytes$' || { echo "bad baseline header"; exit 1; }
+ok=$(awk -F'\t' 'NR>1 && $4=="gzip" && $7=="OK" && $8!=""' "$T/base.tsv" | wc -l | tr -d ' ')
 [ "$ok" = 4 ] || { echo "expected 4 gzip OK rows (2 mates x 2 variants), got $ok"; exit 1; }
-bg=$(awk -F'\t' 'NR>1 && $4=="bgzip" && $3=="bgzf" && $6=="OK"' "$T/base.tsv" | wc -l | tr -d ' ')
+bg=$(awk -F'\t' 'NR>1 && $4=="bgzip" && $3=="bgzf" && $7=="OK"' "$T/base.tsv" | wc -l | tr -d ' ')
 [ "$bg" = 4 ] || { echo "expected 4 bgzip OK rows (2 mates x 2 thread counts), got $bg"; exit 1; }
 [ "$(awk -F'\t' 'NR>1 && $4=="bgzip" && $3=="plain"' "$T/base.tsv" | wc -l | tr -d ' ')" = 0 ] || { echo "bgzip must only run on the bgzf variant"; exit 1; }
-awk -F'\t' 'NR>1 && $6=="ABSENT" && $7!=""{bad=1} END{exit bad}' "$T/base.tsv" || { echo "ABSENT row has a wall time"; exit 1; }
-awk -F'\t' 'NR>1 && $8 !~ /^[1-9][0-9]*$/{bad=1} END{exit bad}' "$T/base.tsv" || { echo "uncompressed_bytes missing or zero"; exit 1; }
+awk -F'\t' 'NR>1 && $7=="ABSENT" && $8!=""{bad=1} END{exit bad}' "$T/base.tsv" || { echo "ABSENT row has a wall time"; exit 1; }
+awk -F'\t' 'NR>1 && $9 !~ /^[1-9][0-9]*$/{bad=1} END{exit bad}' "$T/base.tsv" || { echo "uncompressed_bytes missing or zero"; exit 1; }
+# cache: not_dropped by default, "-" on rows that did not run; with DROP_CACHE=1 never not_dropped
+awk -F'\t' 'NR>1 && !(($7=="ABSENT" && $6=="-") || ($7!="ABSENT" && $6=="not_dropped")){bad=1} END{exit bad}' "$T/base.tsv" \
+  || { echo "baseline cache column wrong without DROP_CACHE"; exit 1; }
+DROP_CACHE=1 bash "$HERE/decode_baseline.sh" "$T/data" "$T/base3.tsv" "1" smoke >/dev/null 2>&1 || { echo "DROP_CACHE baseline failed"; exit 1; }
+awk -F'\t' 'NR>1 && $7=="OK" && $6!="cold" && $6!="unknown"{bad=1} END{exit bad}' "$T/base3.tsv" \
+  || { echo "DROP_CACHE=1 baseline rows must be cold or unknown"; exit 1; }
 # an installed tool that fails must give an EXIT row with an empty wall time and a non-zero exit
 mkdir "$T/stub"; printf '#!/bin/sh\nexit 3\n' > "$T/stub/igzip"; chmod +x "$T/stub/igzip"
 rc=0; PATH="$T/stub:$PATH" bash "$HERE/decode_baseline.sh" "$T/data" "$T/base2.tsv" "1" smoke >/dev/null 2>"$T/berr2.log" || rc=$?
 [ "$rc" != 0 ] || { echo "failing igzip must exit non-zero"; exit 1; }
-[ "$(awk -F'\t' 'NR>1 && $4=="igzip" && $6=="EXIT3" && $7==""' "$T/base2.tsv" | wc -l | tr -d ' ')" = 4 ] || { echo "igzip rows not EXIT3 with empty wall"; exit 1; }
+[ "$(awk -F'\t' 'NR>1 && $4=="igzip" && $7=="EXIT3" && $8==""' "$T/base2.tsv" | wc -l | tr -d ' ')" = 4 ] || { echo "igzip rows not EXIT3 with empty wall"; exit 1; }
 grep -q "4 run(s) did not complete" "$T/berr2.log" || { echo "missing baseline failure summary"; exit 1; }
 echo PASS

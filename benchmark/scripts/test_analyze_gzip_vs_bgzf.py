@@ -4,17 +4,17 @@ import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze_gzip_vs_bgzf as a
 
-BENCH_COLS = ("dataset", "format", "mode", "threads", "result", "wall_s", "max_thread_cpu_frac",
+BENCH_COLS = ("dataset", "format", "mode", "threads", "cache", "result", "wall_s", "max_thread_cpu_frac",
               "reads_after", "digest")
-BASE_COLS = ("dataset", "mate", "variant", "tool", "threads", "result", "wall_s", "uncompressed_bytes")
+BASE_COLS = ("dataset", "mate", "variant", "tool", "threads", "cache", "result", "wall_s", "uncompressed_bytes")
 
-def bench_row(fmt, wall, t=16, mode="C", reads="100", digest="-", ds="big", result="OK"):
-    return dict(dataset=ds, format=fmt, mode=mode, threads=str(t), result=result, wall_s=str(wall),
+def bench_row(fmt, wall, t=16, mode="C", reads="100", digest="-", ds="big", result="OK", cache="not_dropped"):
+    return dict(dataset=ds, format=fmt, mode=mode, threads=str(t), cache=cache, result=result, wall_s=str(wall),
                 max_thread_cpu_frac="0.99", reads_after=reads, digest=digest)
 
 
-def base_row(mate, wall, variant="plain", tool="igzip", t="1", result="OK", ds="big"):
-    return dict(dataset=ds, mate=mate, variant=variant, tool=tool, threads=t, result=result,
+def base_row(mate, wall, variant="plain", tool="igzip", t="1", result="OK", ds="big", cache="not_dropped"):
+    return dict(dataset=ds, mate=mate, variant=variant, tool=tool, threads=t, cache=cache, result=result,
                 wall_s=str(wall), uncompressed_bytes="1")
 
 
@@ -122,6 +122,21 @@ class AnalyzeTest(unittest.TestCase):
         self.assertIn("Single-thread decode floor: 50.0s (igzip -dc", r.stdout)
         self.assertIn("gzip -dc single-thread (informational, not the floor): 12.0s", r.stdout)
 
+    def test_cache_states_printed_and_warned_when_they_differ(self):
+        base = [base_row("1", 50), base_row("2", 45)]
+        bench = [bench_row("plain", 60, cache="cold"), bench_row("bgzf", 20, cache="cold")]
+        r = self.run_main(bench, baseline=base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Cache state: bench cold; baseline not_dropped", r.stdout)
+        self.assertIn("WARNING: cache state differs between fastp runs and decode baselines", r.stdout)
+
+    def test_no_cache_warning_when_states_match(self):
+        base = [base_row("1", 50, cache="cold"), base_row("2", 45, cache="cold")]
+        r = self.run_main([bench_row("plain", 60, cache="cold"), bench_row("bgzf", 20, cache="cold")],
+                          baseline=base)
+        self.assertIn("Cache state: bench cold; baseline cold", r.stdout)
+        self.assertNotIn("WARNING", r.stdout)
+
     def test_summary_without_igzip_says_install_it(self):
         base = [base_row("1", 12, tool="gzip"), base_row("2", 11, tool="gzip")]
         r = self.run_main([bench_row("plain", 60), bench_row("bgzf", 20)], "--large", "big", baseline=base)
@@ -169,8 +184,8 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
-            f.write("dataset\tformat\tmode\tthreads\tresult\twall_s\tmax_thread_cpu_frac\treads_after\tdigest\n"
-                    "big\tplain\tC\t16\tOK\tabc\t0.9\t1\t-\n")
+            f.write("dataset\tformat\tmode\tthreads\tcache\tresult\twall_s\tmax_thread_cpu_frac\treads_after\tdigest\n"
+                    "big\tplain\tC\t16\tcold\tOK\tabc\t0.9\t1\t-\n")
         r = subprocess.run([sys.executable, script, f.name], capture_output=True, text=True)
         os.unlink(f.name)
         self.assertEqual(r.returncode, 2)
@@ -181,7 +196,7 @@ class AnalyzeTest(unittest.TestCase):
         import subprocess, tempfile
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "analyze_gzip_vs_bgzf.py")
         with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as f:
-            f.write("dataset\tformat\tmode\tthreads\tresult\twall_s\tmax_thread_cpu_frac\treads_after\tdigest\n")
+            f.write("dataset\tformat\tmode\tthreads\tcache\tresult\twall_s\tmax_thread_cpu_frac\treads_after\tdigest\n")
         r = subprocess.run([sys.executable, script, f.name, "--large", "nope"], capture_output=True, text=True)
         os.unlink(f.name)
         self.assertEqual(r.returncode, 0)

@@ -26,9 +26,9 @@ class InputError(Exception):
     pass
 
 
-BENCH_COLS = {"dataset", "format", "mode", "threads", "result", "wall_s", "max_thread_cpu_frac",
+BENCH_COLS = {"dataset", "format", "mode", "threads", "cache", "result", "wall_s", "max_thread_cpu_frac",
               "reads_after", "digest"}
-BASE_COLS = {"dataset", "mate", "variant", "tool", "threads", "result", "wall_s"}
+BASE_COLS = {"dataset", "mate", "variant", "tool", "threads", "cache", "result", "wall_s"}
 
 
 def load(path, cols):
@@ -132,6 +132,23 @@ def find_mismatches(bench):
     return compare_outputs(bench)[0]
 
 
+def cache_states(rows):
+    return sorted({r["cache"] for r in rows if r["result"] == "OK"})
+
+
+def report_cache(bench, baseline, have_baseline):
+    """Print the cache states of the timed runs; warn when fastp runs and baselines differ."""
+    b = cache_states(bench)
+    line = f"Cache state: bench {', '.join(b) or 'none'}"
+    if have_baseline:
+        d = cache_states(baseline)
+        line += f"; baseline {', '.join(d) or 'none'}"
+        if b != d:
+            line += (f"\n\n**WARNING: cache state differs between fastp runs and decode baselines "
+                     f"(bench {'/'.join(b)} vs baseline {'/'.join(d)}); plain / floor is not like-for-like.**")
+    print(line + "\n")
+
+
 def cell(v, f):
     return f.format(v) if v is not None else "-"
 
@@ -166,6 +183,7 @@ def run():
         else:
             failures[k].append(r["result"])
 
+    report_cache(bench, baseline, bool(args.baseline))
     keys = set(walls) | set(failures)
     for ds in sorted({k[0] for k in keys}):
         floor = decode_floor(baseline, ds)

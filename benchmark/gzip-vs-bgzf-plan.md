@@ -17,7 +17,7 @@
 - Shell scripts start with `#!/bin/bash` and use `set -uo pipefail` with no `set -e` (as `run_backfill.sh` does), so every failing step must fail loudly: a clear stderr message, a non-OK or `EXIT<n>` row, and a non-zero exit at the end. Test scripts may use `set -e`. They must run on macOS bash 3.2 for smoke tests and on Linux for real runs. No bash 4 features. Guard empty arrays with `${arr[@]+"${arr[@]}"}`.
 - Python is stdlib only, tested with `unittest`.
 - Results TSV columns, in order: `dataset format mode threads rep bgzf_budget cache result wall_s user_s sys_s max_rss_kb max_thread_cpu_frac reads_after digest`.
-- Baseline TSV columns, in order: `dataset mate variant tool threads result wall_s uncompressed_bytes`.
+- Baseline TSV columns, in order: `dataset mate variant tool threads cache result wall_s uncompressed_bytes`. `cache` uses the results TSV's values (`not_dropped`, `cold`, `unknown`), or `-` on an `ABSENT` row that did not run.
 - `format` and `variant` are `plain` or `bgzf`. `mode` is `A`, `B` or `C` as defined in the spec. `result` is `OK`, `HUNG` (any SIGKILL, so an OOM kill is indistinguishable from a timeout), `EXIT<n>`, `NOJSON`, `NODIGEST` or `RUNERR` (results TSV; only `OK` rows are analyzed), or `OK`, `ABSENT`, `EXIT<n>` (baseline TSV).
 - Variant files are named `<dataset>_R<1|2>.<plain|bgzf>.fastq.gz`. The `.gz` suffix is required, because fastp counts gz inputs by extension.
 - Paired-end only.
@@ -451,7 +451,7 @@ git push
 
 **Interfaces:**
 - Consumes: `run_timed.py` (Task 1), variant files (Task 2).
-- Produces: `decode_baseline.sh <data_dir> <out_tsv> [threads_csv="1,2,4,8,16"] [datasets="wgs"]` writes the baseline TSV (columns in Global Constraints). Tools: `gzip -dc` and `igzip -dc` (threads 1), `bgzip -dc -@ N` (BGZF file), `rapidgzip -P N` (both variants). A missing tool gives rows with `result=ABSENT` and empty `wall_s`. The decode floor is `igzip`'s single-thread plain time (fastp decodes plain gzip with ISA-L); `gzip -dc` is informational only.
+- Produces: `decode_baseline.sh <data_dir> <out_tsv> [threads_csv="1,2,4,8,16"] [datasets="wgs"]` writes the baseline TSV (columns in Global Constraints). Tools: `gzip -dc` and `igzip -dc` (threads 1), `bgzip -dc -@ N` (BGZF file), `rapidgzip -P N` (both variants). A missing tool gives rows with `result=ABSENT` and empty `wall_s`. Environment: `DROP_CACHE=1` drops the page cache before each timed run with the same helper and `cache` values as Task 3; the untimed `uncompressed_bytes` count runs once per file before any drop, so it never warms a timed run. The analyzer prints the cache states of both inputs and warns loudly when they differ. The decode floor is `igzip`'s single-thread plain time (fastp decodes plain gzip with ISA-L); `gzip -dc` is informational only.
 
 - [ ] **Step 1: Write the failing test** (append to `test_bench_smoke.sh`, before the final `echo PASS`)
 
