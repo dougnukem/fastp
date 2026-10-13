@@ -14,11 +14,11 @@
 
 - No change to fastp source, flags or defaults.
 - Public accessions only. No Form Bio production data, paths or usage details anywhere in the repo or PR.
-- Shell scripts start with `#!/bin/bash` and use `set -uo pipefail` (as `run_backfill.sh` does). They must run on macOS bash 3.2 for smoke tests and on Linux for real runs. No bash 4 features. Guard empty arrays with `${arr[@]+"${arr[@]}"}`.
+- Shell scripts start with `#!/bin/bash` and use `set -uo pipefail` with no `set -e` (as `run_backfill.sh` does), so every failing step must fail loudly: a clear stderr message, a non-OK or `EXIT<n>` row, and a non-zero exit at the end. Test scripts may use `set -e`. They must run on macOS bash 3.2 for smoke tests and on Linux for real runs. No bash 4 features. Guard empty arrays with `${arr[@]+"${arr[@]}"}`.
 - Python is stdlib only, tested with `unittest`.
 - Results TSV columns, in order: `dataset format mode threads rep bgzf_budget cache result wall_s user_s sys_s max_rss_kb max_thread_cpu_frac reads_after digest`.
 - Baseline TSV columns, in order: `dataset mate variant tool threads result wall_s uncompressed_bytes`.
-- `format` and `variant` are `plain` or `bgzf`. `mode` is `A`, `B` or `C` as defined in the spec. `result` is `OK`, `HUNG`, `EXIT<n>` or (baseline only) `ABSENT`.
+- `format` and `variant` are `plain` or `bgzf`. `mode` is `A`, `B` or `C` as defined in the spec. `result` is `OK`, `HUNG` (any SIGKILL, so an OOM kill is indistinguishable from a timeout), `EXIT<n>`, `NOJSON`, `NODIGEST` or `RUNERR` (results TSV; only `OK` rows are analyzed), or `OK`, `ABSENT`, `EXIT<n>` (baseline TSV).
 - Variant files are named `<dataset>_R<1|2>.<plain|bgzf>.fastq.gz`. The `.gz` suffix is required, because fastp counts gz inputs by extension.
 - Paired-end only.
 - Every commit message ends with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Push after every commit.
