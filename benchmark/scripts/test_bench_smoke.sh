@@ -35,6 +35,17 @@ rc=0; bash "$HERE/bench_gzip_vs_bgzf.sh" "$T/badfastp" "$T/data" "$T/out3.tsv" "
 [ "$(awk -F'\t' 'NR>1' "$T/out3.tsv" | wc -l | tr -d ' ')" = 6 ] || { echo "failing fastp must still record 6 rows"; exit 1; }
 [ "$(awk -F'\t' 'NR>1 && $8=="EXIT2"' "$T/out3.tsv" | wc -l | tr -d ' ')" = 6 ] || { echo "rows not marked EXIT2"; exit 1; }
 grep -q "6 run(s) did not complete" "$T/err3.log" || { echo "missing failure summary"; exit 1; }
+# scratch: the default ($(dirname out)/.scratch) is removed once empty; SCRATCH_DIR puts work dirs there and
+# each one is removed after its run
+[ ! -e "$T/.scratch" ] || { echo "default scratch dir left behind: $(ls -A "$T/.scratch")"; exit 1; }
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -j ] && echo "$2" >> "%s"; shift; done\nexit 2\n' "$T/jpaths" > "$T/recfastp"
+chmod +x "$T/recfastp"; mkdir "$T/scr"
+SCRATCH_DIR="$T/scr" bash "$HERE/bench_gzip_vs_bgzf.sh" "$T/recfastp" "$T/data" "$T/out4.tsv" "1" 1 60 smoke >/dev/null 2>&1 || true
+[ "$(wc -l < "$T/jpaths" | tr -d ' ')" = 6 ] || { echo "stub fastp not run 6 times"; exit 1; }
+while read -r j; do
+  case $j in "$T/scr/run."*/r.json) ;; *) echo "work dir not under SCRATCH_DIR: $j"; exit 1 ;; esac
+  [ ! -e "$(dirname "$j")" ] || { echo "work dir not removed: $(dirname "$j")"; exit 1; }
+done < "$T/jpaths"
 # missing input is skipped, not recorded
 bash "$HERE/bench_gzip_vs_bgzf.sh" "$FASTP" "$T/data" "$T/out2.tsv" "1" 1 60 nosuch >/dev/null 2>"$T/err2.log"
 [ "$(($(wc -l < "$T/out2.tsv") - 1))" = 0 ] && grep -q "skip nosuch" "$T/err2.log" || { echo "missing input not skipped"; exit 1; }

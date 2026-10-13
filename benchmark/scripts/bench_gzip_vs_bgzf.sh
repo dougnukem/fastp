@@ -3,6 +3,10 @@
 # busiest-thread CPU fraction, and an output check. See benchmark/gzip-vs-bgzf-design.md.
 # Usage: bench_gzip_vs_bgzf.sh <fastp_bin> <data_dir> <out_tsv> [threads_csv] [reps] [timeout_s] [datasets]
 # data_dir holds <ds>_R1.<plain|bgzf>.fastq.gz and _R2 (see make_variants.sh).
+# Environment: DIGEST=1 (default) digests mode-C output; DROP_CACHE=1 drops the page cache before each run;
+# SCRATCH_DIR holds the per-run work dirs (mode C writes GBs of .gz output; digest sorts spill there).
+# Default $(dirname out_tsv)/.scratch, not $TMPDIR, which is often a small boot disk; put it on local SSD.
+# A scratch dir this script creates is removed at exit if empty.
 # No `set -e`: every step is checked explicitly so failures name the step.
 set -uo pipefail
 FASTP=${1:?usage: bench_gzip_vs_bgzf.sh <fastp_bin> <data_dir> <out_tsv> [threads] [reps] [timeout_s] [datasets]}
@@ -23,10 +27,15 @@ command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 if command -v md5sum >/dev/null; then HASH=md5sum; elif command -v md5 >/dev/null; then HASH="md5 -q"
 else echo "need md5sum or md5" >&2; exit 1; fi
 
+SCRATCH=${SCRATCH_DIR:-$(dirname "$OUT")/.scratch}
+SCRATCH_MADE=0
+[ -d "$SCRATCH" ] || SCRATCH_MADE=1
+mkdir -p "$SCRATCH" || { echo "cannot create scratch dir $SCRATCH" >&2; exit 1; }
+
 FAILS=0
 WORK=
 # Remove the in-flight work dir (GBs of gz output in mode C) on exit or interrupt.
-trap '[ -n "$WORK" ] && rm -rf "$WORK"' EXIT
+trap '[ -n "$WORK" ] && rm -rf "$WORK"; [ "$SCRATCH_MADE" = 1 ] && rmdir "$SCRATCH" 2>/dev/null' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -64,7 +73,7 @@ run_one() {
   local ds=$1 fmt=$2 mode=$3 t=$4 rep=$5
   local r1="$DATA/${ds}_R1.${fmt}.fastq.gz" r2="$DATA/${ds}_R2.${fmt}.fastq.gz"
   if [ ! -s "$r1" ] || [ ! -s "$r2" ]; then echo "skip $ds/$fmt: missing input ($r1 / $r2)" >&2; return; fi
-  local work; work=$(mktemp -d) || { echo "mktemp failed" >&2; FAILS=$((FAILS + 1)); return; }
+  local work; work=$(mktemp -d "$SCRATCH/run.XXXXXX") || { echo "mktemp failed" >&2; FAILS=$((FAILS + 1)); return; }
   WORK=$work
   local outargs=()
   [ "$mode" = C ] && outargs=(-o "$work/o1.fq.gz" -O "$work/o2.fq.gz")
