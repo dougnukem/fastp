@@ -40,3 +40,5 @@ fastp
 # Test Output
 *.json
 *.html
+# Python bytecode cache
+__pycache__/
