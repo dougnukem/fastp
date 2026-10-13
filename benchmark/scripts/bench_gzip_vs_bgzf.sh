@@ -23,6 +23,13 @@ command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
 if command -v md5sum >/dev/null; then HASH=md5sum; elif command -v md5 >/dev/null; then HASH="md5 -q"
 else echo "need md5sum or md5" >&2; exit 1; fi
 
+FAILS=0
+WORK=
+# Remove the in-flight work dir (GBs of gz output in mode C) on exit or interrupt.
+trap '[ -n "$WORK" ] && rm -rf "$WORK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 printf 'dataset\tformat\tmode\tthreads\trep\tbgzf_budget\tcache\tresult\twall_s\tuser_s\tsys_s\tmax_rss_kb\tmax_thread_cpu_frac\treads_after\tdigest\n' > "$OUT" \
   || { echo "cannot write $OUT" >&2; exit 1; }
 
@@ -57,7 +64,8 @@ run_one() {
   local ds=$1 fmt=$2 mode=$3 t=$4 rep=$5
   local r1="$DATA/${ds}_R1.${fmt}.fastq.gz" r2="$DATA/${ds}_R2.${fmt}.fastq.gz"
   if [ ! -s "$r1" ] || [ ! -s "$r2" ]; then echo "skip $ds/$fmt: missing input ($r1 / $r2)" >&2; return; fi
-  local work; work=$(mktemp -d) || { echo "mktemp failed" >&2; return; }
+  local work; work=$(mktemp -d) || { echo "mktemp failed" >&2; FAILS=$((FAILS + 1)); return; }
+  WORK=$work
   local outargs=()
   [ "$mode" = C ] && outargs=(-o "$work/o1.fq.gz" -O "$work/o2.fq.gz")
   local cache; cache=$(drop_cache)
@@ -68,17 +76,18 @@ run_one() {
     -j "$work/r.json" -h "$work/r.html")
   local ec wall user sys rss frac
   IFS=$'\t' read -r ec wall user sys rss frac <<< "$res"
-  if [ -z "$ec" ] || [ -z "$frac" ]; then
-    echo "run_timed.py gave no usable result for $ds/$fmt/$mode/w$t/rep$rep: '$res'" >&2; rm -rf "$work"; return
-  fi
   local result=OK reads=- digest=-
-  if [ "$ec" = 137 ]; then result=HUNG
+  if [ -z "$ec" ] || [ -z "$frac" ]; then
+    echo "run_timed.py gave no usable result for $ds/$fmt/$mode/w$t/rep$rep: '$res'" >&2
+    result=RUNERR; wall=; user=; sys=; rss=; frac=
+  elif [ "$ec" = 137 ]; then result=HUNG
   elif [ "$ec" != 0 ]; then result="EXIT$ec"
   else
     if ! reads=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["summary"]["after_filtering"]["total_reads"])' "$work/r.json"); then
       echo "cannot read reads_after from $work/r.json ($ds/$fmt/$mode/w$t)" >&2; result=NOJSON; reads=-
     elif [ "$mode" = C ] && [ "$DIGEST" = 1 ]; then
       local d1 d2
+      # shortcut: each mate is hashed separately, so this cannot detect R1/R2 mispairing.
       if d1=$(digest_one "$work/o1.fq.gz" "$work") && d2=$(digest_one "$work/o2.fq.gz" "$work"); then
         digest="${d1}_${d2}"
       else
@@ -90,7 +99,8 @@ run_one() {
   [ "$fmt" = bgzf ] && budget=$(bgzf_budget "$t")
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$ds" "$fmt" "$mode" "$t" "$rep" "$budget" "$cache" "$result" "$wall" "$user" "$sys" "$rss" "$frac" "$reads" "$digest" | tee -a "$OUT"
-  rm -rf "$work"
+  [ "$result" = OK ] || FAILS=$((FAILS + 1))
+  rm -rf "$work"; WORK=
 }
 
 IFS=',' read -ra TLIST <<< "$THREADS"
@@ -105,4 +115,5 @@ for ds in $DATASETS; do
     done
   done
 done
+if [ "$FAILS" -gt 0 ]; then echo "$FAILS run(s) did not complete" >&2; exit 1; fi
 echo "BENCH DONE" >&2
