@@ -25,7 +25,7 @@
 
 ## Review Focus
 
-- One mate missing, empty or truncated: the runner prints `skip ... missing input` and continues; it never records a fake row.
+- One mate missing, empty or truncated: the runner prints `skip ... missing input` and continues; it never records a fake row. If every requested input was skipped (zero rows), the bench and baseline scripts exit 1.
 - fastp hangs or deadlocks: recorded as `HUNG` after the timeout, and the sweep continues.
 - `igzip` or `rapidgzip` not installed: baseline rows say `ABSENT` with empty `wall_s`; analysis must never treat them as zero.
 - Cache state cannot be dropped without root: the `cache` column says `unknown`, never `cold`.

@@ -32,7 +32,7 @@ SCRATCH_MADE=0
 [ -d "$SCRATCH" ] || SCRATCH_MADE=1
 mkdir -p "$SCRATCH" || { echo "cannot create scratch dir $SCRATCH" >&2; exit 1; }
 
-FAILS=0
+FAILS=0 ROWS=0 SKIPS=0
 WORK=
 # Remove the in-flight work dir (GBs of gz output in mode C) on exit or interrupt.
 trap '[ -n "$WORK" ] && rm -rf "$WORK"; [ "$SCRATCH_MADE" = 1 ] && rmdir "$SCRATCH" 2>/dev/null' EXIT
@@ -72,7 +72,7 @@ digest_one() {
 run_one() {
   local ds=$1 fmt=$2 mode=$3 t=$4 rep=$5
   local r1="$DATA/${ds}_R1.${fmt}.fastq.gz" r2="$DATA/${ds}_R2.${fmt}.fastq.gz"
-  if [ ! -s "$r1" ] || [ ! -s "$r2" ]; then echo "skip $ds/$fmt: missing input ($r1 / $r2)" >&2; return; fi
+  if [ ! -s "$r1" ] || [ ! -s "$r2" ]; then echo "skip $ds/$fmt: missing input ($r1 / $r2)" >&2; SKIPS=$((SKIPS + 1)); return; fi
   local work; work=$(mktemp -d "$SCRATCH/run.XXXXXX") || { echo "mktemp failed" >&2; FAILS=$((FAILS + 1)); return; }
   WORK=$work
   local outargs=()
@@ -108,6 +108,7 @@ run_one() {
   [ "$fmt" = bgzf ] && budget=$(bgzf_budget "$t")
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$ds" "$fmt" "$mode" "$t" "$rep" "$budget" "$cache" "$result" "$wall" "$user" "$sys" "$rss" "$frac" "$reads" "$digest" "$top" | tee -a "$OUT"
+  ROWS=$((ROWS + 1))
   [ "$result" = OK ] || FAILS=$((FAILS + 1))
   rm -rf "$work"; WORK=
 }
@@ -124,5 +125,6 @@ for ds in $DATASETS; do
     done
   done
 done
+if [ "$ROWS" = 0 ]; then echo "no runs recorded: all $SKIPS requested run(s) skipped for missing inputs" >&2; exit 1; fi
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS run(s) did not complete" >&2; exit 1; fi
 echo "BENCH DONE" >&2

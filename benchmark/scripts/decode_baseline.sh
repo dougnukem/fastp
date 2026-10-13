@@ -13,11 +13,11 @@ OUT=${2:?usage: decode_baseline.sh <data_dir> <out_tsv> [threads] [datasets]}
 THREADS=${3:-"1,2,4,8,16"}
 DATASETS=${4:-"wgs"}
 HERE=$(cd "$(dirname "$0")" && pwd)
-FAILS=0
+FAILS=0 ROWS=0 SKIPS=0
 printf 'dataset\tmate\tvariant\ttool\tthreads\tcache\tresult\twall_s\tuncompressed_bytes\n' > "$OUT" || { echo "cannot write $OUT" >&2; exit 1; }
 IFS=',' read -ra TLIST <<< "$THREADS"
 
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" | tee -a "$OUT"; }
+row() { ROWS=$((ROWS + 1)); printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" | tee -a "$OUT"; }
 
 # Same semantics as bench_gzip_vs_bgzf.sh drop_cache(); keep the two in sync.
 drop_cache() {
@@ -42,7 +42,7 @@ for ds in $DATASETS; do
   for mate in 1 2; do
     for variant in plain bgzf; do
       f="$DATA/${ds}_R${mate}.${variant}.fastq.gz"
-      [ -s "$f" ] || { echo "skip $ds R$mate $variant: missing $f" >&2; continue; }
+      [ -s "$f" ] || { echo "skip $ds R$mate $variant: missing $f" >&2; SKIPS=$((SKIPS + 1)); continue; }
       # untimed byte count, once per file and before any drop, so it never warms a timed run's cache
       bytes=$(gzip -dc "$f" | wc -c | tr -d ' ')
       if ! [ "${bytes:-0}" -gt 0 ] 2>/dev/null; then
@@ -63,4 +63,5 @@ for ds in $DATASETS; do
   done
 done
 
+if [ "$ROWS" = 0 ]; then echo "no rows recorded: $SKIPS input file(s) skipped as missing" >&2; exit 1; fi
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS run(s) did not complete" >&2; exit 1; fi

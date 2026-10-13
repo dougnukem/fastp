@@ -49,9 +49,13 @@ while read -r j; do
   case $j in "$T/scr/run."*/r.json) ;; *) echo "work dir not under SCRATCH_DIR: $j"; exit 1 ;; esac
   [ ! -e "$(dirname "$j")" ] || { echo "work dir not removed: $(dirname "$j")"; exit 1; }
 done < "$T/jpaths"
-# missing input is skipped, not recorded
-bash "$HERE/bench_gzip_vs_bgzf.sh" "$FASTP" "$T/data" "$T/out2.tsv" "1" 1 60 nosuch >/dev/null 2>"$T/err2.log"
+# missing input is skipped, not recorded; if everything was skipped the run fails
+rc=0; bash "$HERE/bench_gzip_vs_bgzf.sh" "$FASTP" "$T/data" "$T/out2.tsv" "1" 1 60 nosuch >/dev/null 2>"$T/err2.log" || rc=$?
 [ "$(($(wc -l < "$T/out2.tsv") - 1))" = 0 ] && grep -q "skip nosuch" "$T/err2.log" || { echo "missing input not skipped"; exit 1; }
+[ "$rc" != 0 ] || { echo "bench with every input skipped must exit non-zero"; exit 1; }
+rc=0; bash "$HERE/decode_baseline.sh" "$T/data" "$T/base4.tsv" "1" nosuch >/dev/null 2>"$T/berr4.log" || rc=$?
+[ "$(($(wc -l < "$T/base4.tsv") - 1))" = 0 ] && grep -q "skip nosuch" "$T/berr4.log" || { echo "baseline missing input not skipped"; exit 1; }
+[ "$rc" != 0 ] || { echo "baseline with every input skipped must exit non-zero"; exit 1; }
 # decode baselines: gzip always runs; an absent tool is ABSENT with an empty wall time, never 0
 rc=0; bash "$HERE/decode_baseline.sh" "$T/data" "$T/base.tsv" "1,2" smoke >/dev/null 2>"$T/berr.log" || rc=$?
 [ "$rc" = 0 ] || { echo "decode_baseline failed (rc=$rc)"; cat "$T/berr.log"; exit 1; }
@@ -75,4 +79,8 @@ rc=0; PATH="$T/stub:$PATH" bash "$HERE/decode_baseline.sh" "$T/data" "$T/base2.t
 [ "$rc" != 0 ] || { echo "failing igzip must exit non-zero"; exit 1; }
 [ "$(awk -F'\t' 'NR>1 && $4=="igzip" && $7=="EXIT3" && $8==""' "$T/base2.tsv" | wc -l | tr -d ' ')" = 4 ] || { echo "igzip rows not EXIT3 with empty wall"; exit 1; }
 grep -q "4 run(s) did not complete" "$T/berr2.log" || { echo "missing baseline failure summary"; exit 1; }
+# contract: the analyzer reads what the bench and baseline write (no igzip locally, so INCONCLUSIVE is fine)
+rc=0; python3 "$ROOT/benchmark/scripts/analyze_gzip_vs_bgzf.py" "$T/out.tsv" "$T/base.tsv" --large smoke > "$T/summary.md" 2>"$T/aerr.log" || rc=$?
+[ "$rc" = 0 ] || { echo "analyzer failed on bench output (rc=$rc)"; cat "$T/aerr.log"; exit 1; }
+grep -q '^## smoke' "$T/summary.md" || { echo "analyzer summary has no '## smoke' section"; exit 1; }
 echo PASS
