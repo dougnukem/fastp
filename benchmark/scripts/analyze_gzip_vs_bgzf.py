@@ -62,7 +62,23 @@ def decode_floor(baseline, ds):
     return max(min(v) for v in per_mate.values())
 
 
-def decide(walls, floor, ds):
+def rule_failures(walls, failures, ds):
+    """Describe failed reps in the decision-rule cells (plain and BGZF, mode C, -w 16)."""
+    out = []
+    for fmt in ("plain", "bgzf"):
+        k = (ds, RULE_MODE, fmt, RULE_THREADS)
+        bad = failures.get(k, [])
+        if bad:
+            out.append(f"{fmt}: {len(bad)} of {len(bad) + len(walls.get(k, []))} runs failed ({', '.join(sorted(bad))})")
+    return out
+
+
+def decide(walls, floor, ds, failures=None):
+    failures = failures or {}
+    bad = rule_failures(walls, failures, ds)
+    if bad:
+        return (f"INCONCLUSIVE: failed runs in the decision cell (mode {RULE_MODE}, -w {RULE_THREADS})",
+                "; ".join(bad))
     plain = med(walls.get((ds, RULE_MODE, "plain", RULE_THREADS), []))
     bgzf = med(walls.get((ds, RULE_MODE, "bgzf", RULE_THREADS), []))
     if plain is None or bgzf is None or floor is None:
@@ -79,17 +95,54 @@ def decide(walls, floor, ds):
     return ("DO NOT PROPOSE a reader; recommend BGZF on ingest", detail)
 
 
-def find_mismatches(bench):
-    """(dataset, mode, threads, field, values) where plain and BGZF disagree. Failed runs are skipped."""
-    seen = defaultdict(lambda: defaultdict(set))
+def compare_outputs(bench):
+    """Compare plain vs BGZF output per (dataset, mode, threads) over OK runs.
+
+    Returns (mismatches, n_compared, not_compared). mismatches: (dataset, mode, threads, field,
+    sorted [(format, value)]). not_compared: (dataset, mode, threads, reason) -- never a pass."""
+    groups = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))  # g -> fmt -> field -> values
     for r in bench:
         if r["result"] != "OK":
             continue
         g = (r["dataset"], r["mode"], int(num(r, "threads", "bench")))
-        seen[g]["reads_after"].add(r["reads_after"])
+        groups[g][r["format"]]["reads_after"].add(r["reads_after"])
         if r["digest"] not in ("", "-"):
-            seen[g]["digest"].add(r["digest"])
-    return [(*g, field, vals) for g, fields in seen.items() for field, vals in fields.items() if len(vals) > 1]
+            groups[g][r["format"]]["digest"].add(r["digest"])
+    mism, nc, compared = [], [], 0
+    for g in sorted(groups):
+        fmts = groups[g]
+        if not {"plain", "bgzf"} <= set(fmts):
+            nc.append((*g, f"only {'/'.join(sorted(fmts))} has OK runs"))
+            continue
+        compared += 1
+        for field in ("reads_after", "digest"):
+            per = {f: fmts[f][field] for f in ("plain", "bgzf")}
+            if field == "digest" and not (per["plain"] and per["bgzf"]):
+                if per["plain"] or per["bgzf"]:
+                    nc.append((*g, f"digest present only for {'plain' if per['plain'] else 'bgzf'}"))
+                continue
+            if len(per["plain"] | per["bgzf"]) > 1:
+                mism.append((*g, field, sorted((f, v) for f, vs in per.items() for v in vs)))
+    return mism, compared, nc
+
+
+def find_mismatches(bench):
+    return compare_outputs(bench)[0]
+
+
+def cell(v, f):
+    return f.format(v) if v is not None else "-"
+
+
+def wall_cell(k, walls, failures):
+    ok, bad = walls.get(k, []), failures.get(k, [])
+    if not ok and not bad:
+        return "-"
+    if not ok:
+        return f"FAILED ({len(bad)}/{len(bad)})"
+    if bad:
+        return f"{med(ok):.1f} ({len(bad)}/{len(ok) + len(bad)} failed)"
+    return f"{med(ok):.1f}"
 
 
 def run():
@@ -101,44 +154,63 @@ def run():
 
     bench = load(args.bench, BENCH_COLS)
     baseline = load(args.baseline, BASE_COLS) if args.baseline else []
-    walls, fracs = defaultdict(list), defaultdict(list)
+    walls, fracs, failures = defaultdict(list), defaultdict(list), defaultdict(list)
     for r in bench:
+        k = (r["dataset"], r["mode"], r["format"], int(num(r, "threads", args.bench)))
         if r["result"] == "OK":
-            k = (r["dataset"], r["mode"], r["format"], int(num(r, "threads", args.bench)))
             walls[k].append(num(r, "wall_s", args.bench))
             if r["max_thread_cpu_frac"] not in ("", "NA"):
                 fracs[k].append(num(r, "max_thread_cpu_frac", args.bench))
+        else:
+            failures[k].append(r["result"])
 
-    for ds in sorted({k[0] for k in walls}):
+    keys = set(walls) | set(failures)
+    for ds in sorted({k[0] for k in keys}):
         floor = decode_floor(baseline, ds)
         print(f"## {ds}\n")
         print("Single-thread decode floor: " + (f"{floor:.1f}s" if floor else "not measured") + "\n")
-        for mode in sorted({k[1] for k in walls if k[0] == ds}):
+        for mode in sorted({k[1] for k in keys if k[0] == ds}):
             print(f"### mode {mode}\n")
             print("| -w | plain s | BGZF s | BGZF speedup | plain busiest-thread CPU | plain / floor |")
             print("|---|---|---|---|---|---|")
-            for t in sorted({k[3] for k in walls if k[:2] == (ds, mode)}):
+            for t in sorted({k[3] for k in keys if k[:2] == (ds, mode)}):
                 p = med(walls.get((ds, mode, "plain", t), []))
                 b = med(walls.get((ds, mode, "bgzf", t), []))
                 fr = med(fracs.get((ds, mode, "plain", t), []))
-                cell = lambda v, f: f.format(v) if v is not None else "-"
-                print(f"| {t} | {cell(p, '{:.1f}')} | {cell(b, '{:.1f}')} | "
+                print(f"| {t} | {wall_cell((ds, mode, 'plain', t), walls, failures)} | "
+                      f"{wall_cell((ds, mode, 'bgzf', t), walls, failures)} | "
                       f"{cell(p / b if p and b else None, '{:.2f}x')} | {cell(fr, '{:.2f}')} | "
                       f"{cell(p / floor if p and floor else None, '{:.2f}')} |")
             print()
+        bad = sorted((k, v) for k, v in failures.items() if k[0] == ds)
+        if bad:
+            print("### Failed runs\n")
+            for k, v in bad:
+                print(f"- mode {k[1]}, {k[2]}, -w {k[3]}: {len(v)} failed ({', '.join(sorted(v))})")
+            print()
 
+    mism, n_cmp, not_cmp = compare_outputs(bench)
     if args.large:
-        verdict, detail = decide(walls, decode_floor(baseline, args.large), args.large)
-        print(f"## Decision ({args.large})\n\n**{verdict}**\n\n{detail}\n")
+        if mism:
+            print(f"## Decision ({args.large})\n\n**INVALID: plain and BGZF outputs differ, "
+                  "timings cannot be compared**\n")
+        else:
+            verdict, detail = decide(walls, decode_floor(baseline, args.large), args.large, failures)
+            print(f"## Decision ({args.large})\n\n**{verdict}**\n\n{detail}\n")
 
-    mism = find_mismatches(bench)
     print("## Output agreement between plain and BGZF\n")
+    if not_cmp:
+        print("### Not compared\n")
+        for *g, why in not_cmp:
+            print(f"- {g[0]}, mode {g[1]}, -w {g[2]}: {why}")
+        print()
     if mism:
         print("**MISMATCHES FOUND:**\n")
         for m in mism:
             print(f"- {m}")
         sys.exit(1)
-    print("No mismatches.")
+    n_groups = len({tuple(x[:3]) for x in not_cmp})
+    print(f"No mismatches among the {n_cmp} groups compared; {n_groups} groups not compared.")
 
 
 def main():
