@@ -21,6 +21,7 @@
 - `format` and `variant` are `plain` or `bgzf`. `mode` is `A`, `B` or `C` as defined in the spec. `result` is `OK`, `HUNG` (any SIGKILL, so an OOM kill is indistinguishable from a timeout), `EXIT<n>`, `NOJSON`, `NODIGEST` or `RUNERR` (results TSV; only `OK` rows are analyzed), or `OK`, `ABSENT`, `EXIT<n>` (baseline TSV).
 - Variant files are named `<dataset>_R<1|2>.<plain|bgzf>.fastq.gz`. The `.gz` suffix is required, because fastp counts gz inputs by extension.
 - Paired-end only.
+- The code blocks in Tasks 1-5 are the original drafts. Where they differ from these constraints or a task's Interfaces lines (TSV columns, run_timed.py fields, the igzip decode floor), the constraints, the Interfaces lines and the scripts in `benchmark/scripts/` are authoritative.
 - Every commit message ends with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Push after every commit.
 
 ## Review Focus
