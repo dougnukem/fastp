@@ -42,6 +42,12 @@ def main():
     ap.add_argument("--sample-interval", type=float, default=0.5)
     args, cmd = ap.parse_args(argv[:i]), argv[i + 1:]
 
+    def stop(sig, _frame):
+        raise SystemExit(128 + sig)  # unwinds through the wait below, which kills the child group
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
     with open(args.stdout, "wb") as so, open(args.stderr, "wb") as se:
         t0 = time.monotonic()
         p = subprocess.Popen(cmd, stdout=so, stderr=se, start_new_session=True)
@@ -63,8 +69,13 @@ def main():
         st.start()
         timer = threading.Timer(args.timeout, kill) if args.timeout else None
         if timer:
+            timer.daemon = True  # never keep Python alive after an interrupt
             timer.start()
-        _, status, ru = os.wait4(p.pid, 0)
+        try:
+            _, status, ru = os.wait4(p.pid, 0)
+        except BaseException:
+            kill()  # the child has its own session, so nothing else would stop it
+            raise
         wall = time.monotonic() - t0
         done.set()
         st.join(timeout=2)
