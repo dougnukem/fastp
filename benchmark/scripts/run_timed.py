@@ -25,13 +25,17 @@ def thread_cpu(pid):
     out = {}
     try:
         tck = os.sysconf("SC_CLK_TCK")
-        for tid in os.listdir(f"/proc/{pid}/task"):
+        tids = os.listdir(f"/proc/{pid}/task")
+    except (OSError, ValueError):
+        return out
+    for tid in tids:
+        try:  # per thread: one exiting mid-sample must not discard the rest
             with open(f"/proc/{pid}/task/{tid}/stat") as f:
                 s = f.read()
             fields = s[s.rindex(")") + 2:].split()  # fields[0] is stat field 3 (state)
             out[tid] = (int(fields[11]) + int(fields[12])) / tck  # utime + stime
-    except (OSError, ValueError):
-        pass
+        except (OSError, ValueError):
+            pass
     return out
 
 

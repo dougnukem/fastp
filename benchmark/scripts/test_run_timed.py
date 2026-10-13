@@ -133,5 +133,15 @@ class RunTimedTest(unittest.TestCase):
         self.assertGreater(float(f[5]), 0.5)
 
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "needs /proc")
+    def test_thread_exiting_mid_sample_keeps_the_others(self):
+        from unittest import mock
+        sys.path.insert(0, HERE)
+        import run_timed
+        real = os.listdir(f"/proc/{os.getpid()}/task")
+        with mock.patch.object(run_timed.os, "listdir", return_value=["999999999"] + real):
+            got = run_timed.thread_cpu(os.getpid())
+        self.assertEqual(set(got), set(real))
+
 if __name__ == "__main__":
     unittest.main()
