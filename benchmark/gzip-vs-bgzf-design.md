@@ -39,8 +39,8 @@ the level.
 | mode | fastp flags | isolates |
 |---|---|---|
 | A decode-heavy | all trimming and filtering disabled, no output files, JSON to `/dev/null` | reader + minimal work |
-| B default, no output | defaults, no `-o` | reader + full per-read work |
-| C default, gz output | defaults, `-o/-O *.gz` | whole pipeline including parallel output compression |
+| B default, no output | defaults plus `--detect_adapter_for_pe` (as in the backfill harness), no `-o` | reader + full per-read work |
+| C default, gz output | defaults plus `--detect_adapter_for_pe`, `-o/-O *.gz` | whole pipeline including parallel output compression |
 
 **Decode baselines** (no fastp): `gzip -dc`, `igzip -dc` (if available), `bgzip -dc -@ N`, and `rapidgzip -P N`
 (if available), each piped to `/dev/null`. The decode floor is `igzip`'s single-thread time on the plain file, because

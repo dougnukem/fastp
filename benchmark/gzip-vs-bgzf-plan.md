@@ -763,7 +763,7 @@ git push
 
 **Files:**
 - Modify: `benchmark/scripts/fetch_corpus.sh` (optional dataset list as 3rd argument)
-- Create: `benchmark/results/gzip-vs-bgzf-<date>.tsv`, `benchmark/results/gzip-vs-bgzf-baseline-<date>.tsv`, `benchmark/results/gzip-vs-bgzf-<date>-summary.md`
+- Create: `benchmark/results/variant-sizes.tsv`, `benchmark/results/gzip-vs-bgzf-{medium,large}.tsv`, `benchmark/results/baseline-{medium,large}.tsv`, `benchmark/results/gzip-vs-bgzf-<date>-summary.md`
 - Modify: `benchmark/README.md` (short "gzip vs BGZF" section), PR #16 description
 
 **Interfaces:**
@@ -782,36 +782,41 @@ If `read_count` is below the pairs needed, pick another verified public accessio
 - [ ] **Step 3: Add the dataset-list argument to `fetch_corpus.sh`.** Change the last three lines to read the third argument (default `"atac wgs"`) and call `fetch` only for the names listed, so a large `wgs` fetch does not also download `atac`. Run `bash -n benchmark/scripts/fetch_corpus.sh`, then fetch on the VM:
 
 ```bash
-bash benchmark/scripts/fetch_corpus.sh data/medium 4000000 wgs
+bash benchmark/scripts/fetch_corpus.sh data/medium 20000000 wgs
 bash benchmark/scripts/fetch_corpus.sh data/large <pairs from Step 2> wgs
 ```
+
+Medium must land at 1-5 GB `.gz` per mate (spec). 4M pairs gave about 0.35 GB per mate, so 20M pairs is about 1.7 GB. After Step 4, check `benchmark/results/variant-sizes.tsv`: if a medium variant is outside 1-5 GB, refetch with a pair count scaled by the observed ratio.
 
 - [ ] **Step 4: Build variants and fastp on the VM.**
 
 ```bash
 for size in medium large; do for m in 1 2; do
   bash benchmark/scripts/make_variants.sh data/$size/wgs_R$m.fastq.gz variants/$size 6 16
-done; done | tee results/variant-sizes.tsv
+done; done | tee benchmark/results/variant-sizes.tsv
 make -j"$(nproc)"          # fastp binary at the repo root; needs isa-l and libdeflate dev packages
 ```
 
-Install `igzip` (isa-l) and `rapidgzip` (pip) on the VM so those baselines are not `ABSENT`.
+Install `igzip` (the `isa-l-tools` package) on the VM; the decode floor requires it, and without it the verdict is INCONCLUSIVE. Install `rapidgzip` (pip) so that baseline is not `ABSENT`.
 
 - [ ] **Step 5: Run the benchmarks.**
 
 ```bash
-DROP_CACHE=1 bash benchmark/scripts/bench_gzip_vs_bgzf.sh ./fastp variants/medium results/gzip-vs-bgzf-medium.tsv "1,2,4,8,16,32" 3 3600 wgs
-DIGEST=0 DROP_CACHE=1 bash benchmark/scripts/bench_gzip_vs_bgzf.sh ./fastp variants/large results/gzip-vs-bgzf-large.tsv "1,4,8,16,32" 3 7200 wgs
-bash benchmark/scripts/decode_baseline.sh variants/medium results/baseline-medium.tsv "1,2,4,8,16,32" wgs
-bash benchmark/scripts/decode_baseline.sh variants/large results/baseline-large.tsv "1,4,8,16,32" wgs
+# SCRATCH_DIR on the local SSD, not the boot disk: mode C writes GBs of output per run
+SCRATCH_DIR=/mnt/disks/ssd/scratch DROP_CACHE=1 bash benchmark/scripts/bench_gzip_vs_bgzf.sh ./fastp variants/medium benchmark/results/gzip-vs-bgzf-medium.tsv "1,2,4,8,16,32" 3 3600 wgs
+SCRATCH_DIR=/mnt/disks/ssd/scratch DIGEST=0 DROP_CACHE=1 bash benchmark/scripts/bench_gzip_vs_bgzf.sh ./fastp variants/large benchmark/results/gzip-vs-bgzf-large.tsv "1,4,8,16,32" 3 7200 wgs
+DROP_CACHE=1 bash benchmark/scripts/decode_baseline.sh variants/medium benchmark/results/baseline-medium.tsv "1,2,4,8,16,32" wgs
+DROP_CACHE=1 bash benchmark/scripts/decode_baseline.sh variants/large benchmark/results/baseline-large.tsv "1,4,8,16,32" wgs
 ```
+
+`DROP_CACHE=1` needs passwordless `sudo` to write `/proc/sys/vm/drop_caches`; check the `cache` column says `cold` in both files (the analyzer warns when bench and baseline cache states differ).
 
 The large run skips the record digest, because sorting about 37 GB per mate is impractical. The `reads_after` check still runs. If a run reports `unknown` in the `cache` column, say so in the summary and do not call it cold.
 
 - [ ] **Step 6: Analyze and verify by direct check.**
 
 ```bash
-python3 benchmark/scripts/analyze_gzip_vs_bgzf.py results/gzip-vs-bgzf-large.tsv results/baseline-large.tsv --large wgs > results/gzip-vs-bgzf-<date>-summary.md
+python3 benchmark/scripts/analyze_gzip_vs_bgzf.py benchmark/results/gzip-vs-bgzf-large.tsv benchmark/results/baseline-large.tsv --large wgs > benchmark/results/gzip-vs-bgzf-<date>-summary.md
 ```
 
 Read the summary and spot-check three TSV rows by hand (for example rerun one fastp command and compare wall time). If a reader thread is not near 100% CPU at the `-w` where plain gzip stops scaling, take a thread dump (`pstack` or `top -H`) before naming a cause.
