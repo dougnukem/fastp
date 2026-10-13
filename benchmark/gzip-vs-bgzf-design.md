@@ -29,8 +29,10 @@ We need that number before proposing any new reader (for example parallel decode
 
 **Inputs.** Reuse the corpus in [corpus.md](corpus.md). `wgs` (SRR952827) is the medium case. The large case is
 the same accession truncated at more read pairs, not replicated data, so compression behavior stays realistic.
-The ENA-provided gzip is the plain-gzip variant. The BGZF variant is the same reads re-compressed with
-`bgzip -@ N` (same level), so file size differs only by BGZF block overhead. Record both sizes.
+`fetch_corpus.sh` re-compresses with `gzip -1`, which decodes faster than real instrument output, so neither variant
+is taken from it directly. Both variants are rebuilt from the same decompressed reads at the same level (default 6):
+plain with `gzip -6`, BGZF with `bgzip -l 6`. File size then differs only by BGZF block overhead. Record both sizes and
+the level.
 
 **Modes** (each at every thread count, 3 runs, median):
 
@@ -56,7 +58,9 @@ digest-mismatch flag.
 
 ## Decision rule for the follow-up (proposed, for review)
 
-Propose a plain-gzip parallel reader upstream only if, on the large file at `-w 16`, both hold:
+Evaluated on mode C (the realistic pipeline) at `-w 16`. The decode floor is the single-thread decode time of the
+slower mate, because paired-end runs give each mate its own reader thread. Propose a plain-gzip parallel reader
+upstream only if, on the large file, both hold:
 
 - plain-gzip wall time is within about 30% of the single-thread decode floor (decode-bound), and
 - BGZF input is at least 1.5x faster end to end.
@@ -68,4 +72,4 @@ Otherwise the recommendation is to document "BGZF-ize on ingest" and stop.
 - The page cache can hide or exaggerate I/O cost. Record the cache state per run.
 - A large file is only meaningful if it exceeds what one decode thread can feed in a few seconds. Large is about 10 GB `.gz` for that reason.
 - `igzip` and `rapidgzip` may not be installed. Missing baselines are reported as absent, not estimated.
-- The BGZF budget formula is `max(1, (cpus - workers - I/O threads) / gz inputs)`. At high `-w` on a small box it can drop to 1, which would make BGZF look no better than plain gzip. Record the effective budget.
+- The BGZF budget formula is `max(1, (cpus - (workers + 4)) / gz inputs)`, and gz inputs are counted by a `.gz` file extension. At high `-w` on a small box it can drop to 1, which would make BGZF look no better than plain gzip. Record the effective budget.
