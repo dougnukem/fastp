@@ -74,9 +74,9 @@ def main():
         def sampler():
             while not done.wait(args.sample_interval):
                 for tid, c in thread_cpu(p.pid).items():
-                    peak[tid] = max(peak.get(tid, 0.0), c)
-                    if tid not in comm:
+                    if tid not in comm:  # before peak, so every tid in peak has a name
                         comm[tid] = thread_comm(p.pid, tid)
+                    peak[tid] = max(peak.get(tid, 0.0), c)
 
         def kill():
             try:
