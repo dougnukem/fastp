@@ -59,13 +59,15 @@ def main():
             except ProcessLookupError:
                 pass
 
-        threading.Thread(target=sampler, daemon=True).start()
+        st = threading.Thread(target=sampler, daemon=True)
+        st.start()
         timer = threading.Timer(args.timeout, kill) if args.timeout else None
         if timer:
             timer.start()
         _, status, ru = os.wait4(p.pid, 0)
         wall = time.monotonic() - t0
         done.set()
+        st.join(timeout=2)
         if timer:
             timer.cancel()
 
